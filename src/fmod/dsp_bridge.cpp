@@ -27,32 +27,7 @@ constexpr FMODSig kAnchored[] = {
     {"ChannelControl::addDSP", "4C 8B DC 56 48 81 EC 70 01 00 00|"
                                "40 53 55 56 57 41 56 48 81 EC 50 01 00 00"},
     {"ChannelControl::removeDSP", "48 89 5C 24 18 48 89 74 24 20 57 48 81 EC 50 01 00 00"},
-    // setMode is best-effort -- tries every FMOD prologue we know; install
-    // proceeds without it. Used to force FMOD_LOOP_NORMAL on the radio
-    // channel so the placeholder sample never reaches its natural end.
-    {"ChannelControl::setMode", "4C 8B DC 56 48 81 EC 70 01 00 00|"
-                                "40 53 55 56 57 41 56 48 81 EC 50 01 00 00|"
-                                "48 89 5C 24 10 57 48 81 EC 50 01 00 00|"
-                                "48 89 5C 24 18 48 89 74 24 20 57 48 81 EC 50 01 00 00|"
-                                "40 53 48 83 EC 20|"
-                                "48 89 5C 24 08 57 48 83 EC 20"},
 };
-
-// FMOD_LOOP_NORMAL: makes the channel loop forever on its source sample.
-// Set at install time (and re-set on config change) so the placeholder
-// sample doesn't end and drop the channel out from under our DSP.
-constexpr uint32_t kFmodLoopNormal = 0x2;
-
-// FMOD_2D: switches the channel out of 3D spatialisation. Default path
-// (force_stereo) sets this bit and feeds stereo, so the channel plays
-// back as a regular non-positional stereo source. When force_stereo is
-// off we clear the bit and feed mono, because stereo into a 3D panner
-// phase-cancels into a metallic mess.
-constexpr uint32_t kFmod2D = 0x8;
-
-inline uint32_t channel_mode(bool force_stereo) noexcept {
-    return kFmodLoopNormal | (force_stereo ? kFmod2D : 0u);
-}
 
 // Smooth saturation near full-scale. Transparent for |x| <= knee and
 // asymptotically approaches ±1 above, so clean signals pass through
@@ -127,19 +102,16 @@ bool resolve_fmod_signatures(const PEImage& img, FMODFns& out) noexcept {
         find_by_anchor(img, kAnchored[2].anchor, kAnchored[2].pattern));
     out.channel_control_rem_dsp = reinterpret_cast<FMODFns::ChannelControlRemDSP_t>(
         find_by_anchor(img, kAnchored[3].anchor, kAnchored[3].pattern));
-    out.channel_control_set_mode = reinterpret_cast<FMODFns::ChannelControlSetMode_t>(
-        find_by_anchor(img, kAnchored[4].anchor, kAnchored[4].pattern));
     out.handle_resolver =
         reinterpret_cast<FMODFns::HandleResolver_t>(find_by_pattern(img, kResolverPattern));
     out.handle_unlock =
         reinterpret_cast<FMODFns::HandleUnlock_t>(find_by_pattern(img, kUnlockPattern));
 
-    log::info("[sigscan] createDSP={} dsp_release={} addDSP={} removeDSP={} setMode={} "
+    log::info("[sigscan] createDSP={} dsp_release={} addDSP={} removeDSP={} "
               "resolver={} unlock={}",
               (void*)out.system_create_dsp, (void*)out.dsp_release,
               (void*)out.channel_control_add_dsp, (void*)out.channel_control_rem_dsp,
-              (void*)out.channel_control_set_mode, (void*)out.handle_resolver,
-              (void*)out.handle_unlock);
+              (void*)out.handle_resolver, (void*)out.handle_unlock);
 
     if (!out.system_create_dsp) {
         log::info("[sigscan] System::createDSP not yet visible -- will retry at first install");
@@ -147,11 +119,6 @@ bool resolve_fmod_signatures(const PEImage& img, FMODFns& out) noexcept {
     if (!out.handle_unlock) {
         log::warn("[sigscan] Handle::unlock not resolved -- the resolver lock will leak; "
                   "expect the game to freeze a few seconds after DSP install");
-    }
-    if (!out.channel_control_set_mode) {
-        log::warn("[sigscan] ChannelControl::setMode not resolved -- the radio channel "
-                  "will die at the placeholder sample's end and the user will have to "
-                  "toggle the in-game radio to recover");
     }
     return out.ready();
 }
@@ -262,27 +229,6 @@ void DSPBridge::install_dsp_locked(uint32_t handle) noexcept {
     current_dsp_ = dsp;
     current_handle_.store(handle, std::memory_order_release);
     log::info("[dsp] installed dsp={} on handle=0x{:X}", dsp, handle);
-
-    // Pin the channel in loop mode so FMOD doesn't tear it down when the
-    // placeholder sample reaches its natural end. Without this, FMOD drops
-    // the channel after ~2 min and Forza only allocates a replacement
-    // handle when the user toggles the in-game radio.
-    if (fns_.channel_control_set_mode) {
-        uint32_t mrc        = ~0u;
-        const uint32_t mode = channel_mode(force_stereo_audio());
-        if (!seh_call([&] { mrc = fns_.channel_control_set_mode(channel, mode); }) ||
-            mrc != 0) {
-            log::warn("[dsp] setMode(0x{:X}) failed r={}; channel may die early", mode, mrc);
-        }
-    }
-}
-
-void DSPBridge::set_force_stereo_audio(bool v) noexcept {
-    const bool old = force_stereo_audio_.exchange(v, std::memory_order_release);
-    if (old == v || !fns_.channel_control_set_mode) return;
-    const uint32_t handle = current_handle_.load(std::memory_order_acquire);
-    if (!handle) return;
-    seh_call([&] { fns_.channel_control_set_mode(handle, channel_mode(v)); });
 }
 
 void DSPBridge::set_target(const RadioInstance& inst, void* fmod_system) noexcept {
@@ -296,15 +242,6 @@ uint32_t DSPBridge::read_live_handle(std::byte* radio_stream) const noexcept {
     uint32_t handle = 0;
     if (!safe_read(radio_stream + 0x20, handle) || !handle) return 0;
     return validate_handle(handle) ? handle : 0;
-}
-
-bool DSPBridge::current_handle_alive() const noexcept {
-    const uint32_t handle = current_handle_.load(std::memory_order_acquire);
-    return handle != 0 && fns_.ready() && validate_handle(handle);
-}
-
-bool DSPBridge::channel_handle_alive(std::byte* radio_stream) const noexcept {
-    return read_live_handle(radio_stream) != 0;
 }
 
 void DSPBridge::retarget_if_needed() noexcept {
@@ -336,11 +273,9 @@ uint32_t __stdcall DSPBridge::read_callback(void* /*dsp_state*/, float* in_buf, 
 
     // Declare our DSP output: stereo (default, force_stereo path) or mono
     // (when force_stereo is off and we're feeding the 3D panner -- stereo
-    // into a 3D panner phase-cancels into a metallic mess). FMOD does not
-    // re-query *out_channels after a mid-stream setMode, so we have to
-    // overwrite it unconditionally; clamping to its incoming value would
-    // pin us to whatever the channel was first allocated for (mono on the
-    // 3D radio channel) and silently ignore force_stereo.
+    // into a 3D panner phase-cancels into a metallic mess). FMOD re-reads
+    // *out_channels every callback, so writing it here unconditionally is
+    // all that's needed to switch layout live on a config change.
     const int32_t out_ch = b->force_stereo_audio() ? 2 : 1;
     if (out_channels) *out_channels = out_ch;
     const std::size_t total = static_cast<std::size_t>(length) * out_ch;

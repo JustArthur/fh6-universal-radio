@@ -17,8 +17,13 @@ constexpr int kDiscoveryTries  = 120; // 10-minute budget; the radio system
                                       // isn't wired up until well into launch.
 
 // Ticks of no read_callback progress (while the source is producing PCM)
-// before we conclude the DSP is attached to a dead channel. 1s @ 20ms.
+// before we conclude the game tore the radio channel down. 1s @ 20ms.
 constexpr int kStaleTickThreshold = 50;
+
+// Minimum gap between two off/on station toggles. The toggle blocks ~300ms
+// and the game needs a moment to reallocate the channel, so we leave it well
+// alone in between rather than thrashing the radio.
+constexpr auto kRetuneCooldown = 6s;
 
 // SoundName of the placeholder sample our DSP overwrites. Matches the carrier
 // shipped by the radio-mod media overlay; if absent, we fall back to the
@@ -46,40 +51,20 @@ ControlLoop::~ControlLoop() {
 void ControlLoop::run(const std::stop_token& tok) {
     log::info("[ctrl] control loop started");
 
-    DiscoveryResult disc;
+    bool acquired = false;
     for (int attempt = 0; attempt < kDiscoveryTries && !tok.stop_requested(); ++attempt) {
-        disc = discover_radio_instances(img_);
-        if (!disc.instances.empty()) break;
+        if (acquire_target()) {
+            acquired = true;
+            break;
+        }
         for (auto t = std::chrono::steady_clock::now() + kDiscoveryRetry;
              std::chrono::steady_clock::now() < t && !tok.stop_requested();)
             std::this_thread::sleep_for(kTick);
     }
-
-    if (disc.instances.empty()) {
+    if (!acquired) {
         log::warn("[ctrl] discovery timed out; control loop exiting");
         return;
     }
-
-    const RadioInstance* chosen = select_instance(disc, /*require_live=*/false);
-    if (!chosen) {
-        log::warn("[ctrl] discovery returned no usable instance; control loop exiting");
-        return;
-    }
-    if (chosen->sound_name != kTargetSoundName) {
-        log::warn(R"([ctrl] no instance matches target "{}"; falling back to "{}")",
-                  kTargetSoundName, chosen->sound_name);
-    }
-
-    void* fmod_system = resolve_fmod_system(img_, chosen->radio_stream);
-    if (!fmod_system) {
-        log::warn("[ctrl] FMOD SystemI resolution failed");
-        return;
-    }
-    bridge_.set_target(*chosen, fmod_system);
-    meta_.set_target(chosen->sample_props_body);
-    log::info("[ctrl] targeting RadioStreamFmod @0x{:X} SoundName=\"{}\" SystemI*=0x{:X}",
-              reinterpret_cast<uintptr_t>(chosen->radio_stream), chosen->sound_name,
-              reinterpret_cast<uintptr_t>(fmod_system));
 
     // The radio HUD reads from the SampleProperties slots at a much lower
     // rate than the audio mixer. 4 Hz is more than enough and keeps the
@@ -99,18 +84,28 @@ void ControlLoop::run(const std::stop_token& tok) {
         }
 
         // Staleness watchdog: while a source is actively producing audio,
-        // FMOD's mixer should be invoking our read_callback every tick.
-        // If call_count() freezes for ~1s, the channel was destroyed by
-        // FMOD without writing a fresh handle to +0x20 (e.g. placeholder
-        // sample ended). Re-discover and switch to a live channel.
+        // FMOD's mixer should be invoking our read_callback every tick. If
+        // call_count() freezes for ~1s, the game tore down the radio channel
+        // and won't rebuild it on its own. Toggling the in-game station off
+        // and back on is the only thing that makes it allocate a fresh
+        // channel; retarget_if_needed() then re-attaches the DSP next tick.
+        // Gated on R10 so we never yank the user off a station they chose.
         auto* active          = bridge_.manager().active();
         const bool busy       = active && (active->playback_state() == PlaybackState::playing ||
                                            active->playback_state() == PlaybackState::buffering);
         const std::uint64_t c = bridge_.call_count();
         if (busy && c == prev_calls_) {
             if (++stale_ticks_ >= kStaleTickThreshold) {
-                recover_stale_dsp();
-                stale_ticks_ = 0;
+                stale_ticks_   = 0;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_retune_ >= kRetuneCooldown &&
+                    game_state_.read().on_target_station &&
+                    game_state_.retune_streamer_station()) {
+                    last_retune_ = now;
+                    // The toggle may hand us a freshly-allocated RadioStreamFmod;
+                    // re-point at the live one so retarget_if_needed installs there.
+                    acquire_target();
+                }
             }
         } else {
             stale_ticks_ = 0;
@@ -139,32 +134,40 @@ void ControlLoop::run(const std::stop_token& tok) {
     log::info("[ctrl] control loop exiting");
 }
 
-const RadioInstance* ControlLoop::select_instance(const DiscoveryResult& disc,
-                                                  bool require_live) const noexcept {
-    const RadioInstance* fallback = nullptr;
-    for (auto& i : disc.instances) {
-        if (require_live && !bridge_.channel_handle_alive(i.radio_stream)) continue;
-        if (i.sound_name == kTargetSoundName) return &i;
-        if (!fallback) fallback = &i;
-    }
-    return fallback;
-}
-
-void ControlLoop::recover_stale_dsp() noexcept {
-    if (bridge_.current_handle_alive()) return;  // false alarm; channel still live
-
-    auto disc = discover_radio_instances(img_);
-    const RadioInstance* chosen = select_instance(disc, /*require_live=*/true);
-    if (!chosen) return;
+bool ControlLoop::acquire_target() noexcept {
+    auto disc                   = discover_radio_instances(img_);
+    const RadioInstance* chosen = select_instance(disc);
+    if (!chosen) return false;
+    if (chosen->sound_name != kTargetSoundName)
+        log::warn(R"([ctrl] no instance matches target "{}"; falling back to "{}")",
+                  kTargetSoundName, chosen->sound_name);
 
     void* fmod_system = resolve_fmod_system(img_, chosen->radio_stream);
-    if (!fmod_system) return;
-
+    if (!fmod_system) {
+        log::warn("[ctrl] FMOD SystemI resolution failed");
+        return false;
+    }
     bridge_.set_target(*chosen, fmod_system);
     meta_.set_target(chosen->sample_props_body);
-    log::info(R"([ctrl] DSP stale; recovered onto RadioStreamFmod @0x{:X} SoundName="{}")",
-              reinterpret_cast<uintptr_t>(chosen->radio_stream), chosen->sound_name);
-    // Next tick's retarget_if_needed installs the DSP on chosen's fresh handle.
+    log::info("[ctrl] targeting RadioStreamFmod @0x{:X} SoundName=\"{}\" SystemI*=0x{:X}",
+              reinterpret_cast<uintptr_t>(chosen->radio_stream), chosen->sound_name,
+              reinterpret_cast<uintptr_t>(fmod_system));
+    return true;
+}
+
+const RadioInstance* ControlLoop::select_instance(const DiscoveryResult& disc) const noexcept {
+    const RadioInstance* target   = nullptr;  // first placeholder-named match, any handle state
+    const RadioInstance* fallback = nullptr;  // first instance of any name
+    for (auto& i : disc.instances) {
+        const bool is_target = i.sound_name == kTargetSoundName;
+        // FH6 can spin up several streams sharing the placeholder name (e.g.
+        // an idle secondary mix); prefer the one whose channel is actually
+        // live so we attach to the stream that's carrying audio.
+        if (is_target && bridge_.channel_handle_alive(i.radio_stream)) return &i;
+        if (is_target && !target) target = &i;
+        if (!fallback) fallback = &i;
+    }
+    return target ? target : fallback;
 }
 
 void ControlLoop::run_playback_state_machines(time_point now) noexcept {

@@ -3,6 +3,7 @@
 #include "fh6/log.hpp"
 #include "fh6/safe_mem.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace fh6::fmod_bridge {
@@ -18,6 +19,16 @@ constexpr std::size_t kMovRipOffset  = 18;
 constexpr std::size_t kDispOffset    = kMovRipOffset + 3;
 constexpr std::size_t kInsnEndOffset = kMovRipOffset + 7;
 
+// RadioState::setStationByName(const std::string&). Takes the radio_state in
+// rcx and a pointer to the station-name std::string in rdx.
+constexpr const char* kSetStationPattern =
+    "48 89 5C 24 18 56 57 41 57 48 83 EC 30 4C 8B F9 48 8B DA "
+    "48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 83 7B 18 0F";
+
+// Station names the game matches by string. "StationOff" silences the radio;
+// kTargetStation1 ("Streamer Mode") re-engages the station carrying our DSP.
+constexpr const char* kStationOff = "StationOff";
+
 // Offsets within *radio_state.
 constexpr std::ptrdiff_t kRaceRunningA   = 0x68;
 constexpr std::ptrdiff_t kRaceRunningB   = 0x69;
@@ -32,6 +43,14 @@ constexpr const char* kTargetStation2 = "Universal Radio";
 } // namespace
 
 GameStateProbe::GameStateProbe(const PEImage& img) noexcept {
+    set_station_fn_ = reinterpret_cast<SetStationFn>(find_by_pattern(img, kSetStationPattern));
+    if (set_station_fn_)
+        log::info("[gstate] station setter @ RVA 0x{:X}",
+                  static_cast<uint32_t>(reinterpret_cast<std::byte*>(set_station_fn_) - img.base));
+    else
+        log::warn("[gstate] station setter pattern not found -- "
+                  "stall recovery (radio off/on) will be unavailable");
+
     std::byte* match = find_by_pattern(img, kProloguePattern);
     if (!match) {
         log::warn("[gstate] radio_state_singleton pattern not found -- "
@@ -79,6 +98,40 @@ GameStateProbe::Snapshot GameStateProbe::read() const noexcept {
             out.on_target_station = (*name == kTargetStation1) || (*name == kTargetStation2);
     }
     return out;
+}
+
+void GameStateProbe::set_station(const std::byte* radio_state,
+                                 std::string_view name) const noexcept {
+    // The setter reads the name as an MSVC std::string by const-ref. We build
+    // one by hand (this DLL's libc++ layout differs): our names are short, so
+    // they live inline in the 16-byte SBO buffer and the capacity stays 15.
+    struct MsvcString {
+        char buf[16];
+        std::uint64_t size;
+        std::uint64_t cap;
+    } s{};
+    const std::size_t n = std::min(name.size(), sizeof(s.buf) - 1);
+    std::memcpy(s.buf, name.data(), n);
+    s.size   = n;
+    s.cap    = sizeof(s.buf) - 1;
+    auto* fn = set_station_fn_;
+    seh_call([&] { fn(const_cast<std::byte*>(radio_state), &s); });
+}
+
+bool GameStateProbe::retune_streamer_station() noexcept {
+    if (!singleton_slot_ || !set_station_fn_) return false;
+
+    const std::byte* radio_state = nullptr;
+    if (!safe_read(singleton_slot_, radio_state) || !radio_state) return false;
+
+    log::info(R"([gstate] radio stalled; cycling station off -> "{}" to rebuild the FMOD channel)",
+              kTargetStation1);
+    set_station(radio_state, kStationOff);
+    Sleep(300);
+    // The off transition can reallocate radio_state; re-read before re-tuning.
+    if (!safe_read(singleton_slot_, radio_state) || !radio_state) return false;
+    set_station(radio_state, kTargetStation1);
+    return true;
 }
 
 } // namespace fh6::fmod_bridge

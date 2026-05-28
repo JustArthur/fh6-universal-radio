@@ -40,15 +40,16 @@ private:
     void push_metadata() noexcept;
 
     // Per-tick state-machine dispatch:
-    // - quickStationSkip from DSPBridge::current_handle_alive() (jitter-free
-    //   FMOD channel slot read at radio_stream+0x20).
+    // - quickStationSkip from the R10 edge (game_state_.on_target_station).
     // - raceStartPlayback from game_state_.race_active (FH6 radio_state
     //   +0x68 && +0x69) plus the race_restart helper at +0x80.
     void run_playback_state_machines(time_point now) noexcept;
 
-    const RadioInstance* select_instance(const DiscoveryResult& disc,
-                                         bool require_live) const noexcept;
-    void recover_stale_dsp() noexcept;
+    // Discover the live RadioStreamFmod carrying our sample and point the
+    // bridge + metadata injector at it. Used at startup and after a recovery
+    // toggle (the game may reallocate the wrapper).
+    bool acquire_target() noexcept;
+    const RadioInstance* select_instance(const DiscoveryResult& disc) const noexcept;
 
     DSPBridge& bridge_;
     const PEImage& img_;
@@ -57,6 +58,7 @@ private:
     GameStateProbe game_state_;
     std::uint64_t prev_calls_ = 0;
     int stale_ticks_          = 0;
+    time_point last_retune_{};  // last off/on station toggle, for cooldown
 
     // std::atomic<std::shared_ptr<T>> would be ideal here but libc++ in
     // llvm-mingw doesn't ship the C++20 specialization; a plain mutex works

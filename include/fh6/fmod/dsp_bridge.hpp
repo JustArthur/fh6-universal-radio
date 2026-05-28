@@ -22,7 +22,6 @@ struct FMODFns {
 
     using ChannelControlAddDSP_t  = uint32_t (*)(uint64_t channel_handle, int32_t index, void* dsp);
     using ChannelControlRemDSP_t  = uint32_t (*)(uint64_t channel_handle, void* dsp);
-    using ChannelControlSetMode_t = uint32_t (*)(uint64_t channel_handle, uint32_t mode);
 
     using HandleResolver_t = uint32_t (*)(uint32_t handle, void** out_inst, uint64_t* out_kind);
     // Handle::unlock. Must pair every open or the handle table leaks a
@@ -33,7 +32,6 @@ struct FMODFns {
     DSPRelease_t dsp_release                         = nullptr;
     ChannelControlAddDSP_t channel_control_add_dsp   = nullptr;
     ChannelControlRemDSP_t channel_control_rem_dsp   = nullptr;
-    ChannelControlSetMode_t channel_control_set_mode = nullptr;
     HandleResolver_t handle_resolver                 = nullptr;
     HandleUnlock_t handle_unlock                     = nullptr;
 
@@ -41,11 +39,9 @@ struct FMODFns {
     // install time if the LEA wasn't resident at DLL load.
     std::byte* host_base = nullptr;
 
-    // system_create_dsp is lazy-resolved on first install. handle_unlock and
-    // channel_control_set_mode are best-effort: install proceeds without
-    // them. Missing unlock leaks resolver slots; missing set_mode means the
-    // channel can die when the placeholder sample's natural duration elapses
-    // (Forza won't always allocate a new one).
+    // system_create_dsp is lazy-resolved on first install. handle_unlock is
+    // best-effort: install proceeds without it (missing unlock just leaks
+    // resolver slots).
     bool ready() const noexcept {
         return host_base && dsp_release && channel_control_add_dsp &&
                channel_control_rem_dsp && handle_resolver;
@@ -71,14 +67,12 @@ public:
     // (station changed, race ended, etc.). Cheap to call every tick.
     void retarget_if_needed() noexcept;
 
-    // True while our currently-installed channel handle is still resolvable.
-    // Goes false when FMOD destroys the channel without writing a fresh
-    // handle to +0x20 (e.g. the placeholder sample reached its natural end).
-    bool current_handle_alive() const noexcept;
-
-    // True when `radio_stream`+0x20 holds a live FMOD channel handle. Used
-    // by the control loop to pick a recovery candidate after staleness.
-    bool channel_handle_alive(std::byte* radio_stream) const noexcept;
+    // True when `radio_stream`+0x20 holds a live, resolvable FMOD channel
+    // handle. Lets the control loop prefer the instance actually carrying
+    // audio when several share the placeholder SoundName.
+    bool channel_handle_alive(std::byte* radio_stream) const noexcept {
+        return read_live_handle(radio_stream) != 0;
+    }
 
     DSPMode mode() const noexcept { return mode_.load(std::memory_order_acquire); }
     void set_mode(DSPMode m) noexcept;
@@ -89,7 +83,11 @@ public:
     void set_gain(float g) noexcept { gain_.store(g, std::memory_order_release); }
 
     bool force_stereo_audio() const noexcept { return force_stereo_audio_.load(std::memory_order_acquire); }
-    void set_force_stereo_audio(bool v) noexcept;
+    // Only steers the read callback's channel count (1 = mono, 2 = stereo);
+    // FMOD re-queries *out_channels every callback, so no channel-mode touch.
+    void set_force_stereo_audio(bool v) noexcept {
+        force_stereo_audio_.store(v, std::memory_order_release);
+    }
 
     uint64_t underruns() const noexcept { return underruns_.load(std::memory_order_relaxed); }
     uint64_t call_count() const noexcept { return calls_.load(std::memory_order_relaxed); }
@@ -108,8 +106,7 @@ private:
     // True if the resolver accepts the handle (the channel is still live).
     bool validate_handle(uint32_t handle) const noexcept;
     // Returns the live channel handle at radio_stream+0x20, or 0 if absent
-    // or dead. Centralises the FMOD read+validate that retarget and the
-    // public `*_alive` queries both need.
+    // or dead, validating it through the resolver.
     uint32_t read_live_handle(std::byte* radio_stream) const noexcept;
     void release_current_dsp_locked() noexcept;
     void install_dsp_locked(uint32_t handle) noexcept;
@@ -119,8 +116,8 @@ private:
 
     void* fmod_system_       = nullptr;
     void* current_dsp_       = nullptr;
-    // Read from the config-change thread via set_force_stereo_audio;
-    // mutated from the control-loop thread via install/release/retarget.
+    // Channel handle the DSP is installed on. Mutated from the control-loop
+    // thread via install/release/retarget; read from the same thread.
     std::atomic<uint32_t> current_handle_{0};
     mutable uint32_t last_bad_handle_ = 0;  // suppress repeated rc=3 / SEH warnings for the same handle
     std::byte* radio_stream_ = nullptr;
