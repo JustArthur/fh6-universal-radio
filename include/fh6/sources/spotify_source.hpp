@@ -27,8 +27,8 @@ public:
     void play() override;
     void pause() override;
     void stop() override;
-    void next() override {} // Next/Prev are handled by the Spotify app
-    void previous() override {}
+    void next() override; // next/prev are handled by OS media keys
+    void previous() override;
     void pump(RingBuffer& ring) override;
 
     TrackInfo current_track() const override;
@@ -38,7 +38,7 @@ public:
     AuthState auth_state() const noexcept override;
     std::string auth_instructions() const override;
     SourceCapabilities capabilities() const noexcept override { 
-        return {false, false, false}; // control is delegated to user
+        return {false, true, false};
     }
 
 private:

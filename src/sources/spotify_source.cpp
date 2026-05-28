@@ -100,6 +100,17 @@ struct SpotifySource::Pipe {
     std::string err_buf;
     bool ended         = false;
 
+    // tracks the total PCM bytes pumped to calculate UI time syncing
+    uint64_t bytes_consumed = 0;
+
+    // gapless & prefetch tracking
+    std::string pending_title;
+    uint64_t pending_duration_ms = 0;
+    uint64_t track_duration_ms = 0; 
+    bool has_pending = false;
+    int stall_ticks = 0;
+    bool force_next_metadata = false;
+
     ~Pipe() {
         if (read_pipe)  CloseHandle(read_pipe);
         if (err_pipe)   CloseHandle(err_pipe);
@@ -250,12 +261,11 @@ void SpotifySource::stop_pipe_locked() {
 void SpotifySource::play() {
     std::scoped_lock lk{mu_};
     if (!pipe_) start_pipe_locked();
-    if (pipe_) state_.store(PlaybackState::playing, std::memory_order_release);
+    
+    state_.store(PlaybackState::playing, std::memory_order_release);
 }
 
 void SpotifySource::pause() {
-    // let the process run so it stays visible on the network, 
-    // but stop pumping audio into the ring buffer.
     state_.store(PlaybackState::paused, std::memory_order_release);
 }
 
@@ -264,17 +274,63 @@ void SpotifySource::stop() {
     stop_pipe_locked();
 }
 
+void SpotifySource::next() {
+    // emulate OS media next
+    INPUT ip[2] = {};
+    ip[0].type = INPUT_KEYBOARD;
+    ip[0].ki.wVk = VK_MEDIA_NEXT_TRACK;
+    
+    ip[1].type = INPUT_KEYBOARD;
+    ip[1].ki.wVk = VK_MEDIA_NEXT_TRACK;
+    ip[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    
+    SendInput(2, ip, sizeof(INPUT));
+
+    std::scoped_lock lk{mu_};
+    if (pipe_) {
+        pipe_->bytes_consumed = 0;
+        pipe_->has_pending = false; // clear any queued prefetch
+        pipe_->track_duration_ms = 0; // prevent waiting for old duration
+        pipe_->force_next_metadata = true; // force parser to update immediately
+    }
+    info_.position_ms = 0;
+}
+
+void SpotifySource::previous() {
+    // emulate OS media previous
+    INPUT ip[2] = {};
+    ip[0].type = INPUT_KEYBOARD;
+    ip[0].ki.wVk = VK_MEDIA_PREV_TRACK;
+    
+    ip[1].type = INPUT_KEYBOARD;
+    ip[1].ki.wVk = VK_MEDIA_PREV_TRACK;
+    ip[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    
+    SendInput(2, ip, sizeof(INPUT));
+
+    std::scoped_lock lk{mu_};
+    if (pipe_) {
+        pipe_->bytes_consumed = 0;
+        pipe_->has_pending = false; // clear any queued prefetch
+        pipe_->track_duration_ms = 0; // prevent waiting for old duration
+        pipe_->force_next_metadata = true; // force parser to update immediately
+    }
+    info_.position_ms = 0;
+}
+
 TrackInfo SpotifySource::current_track() const {
     std::scoped_lock lk{mu_};
     return info_;
 }
 
 void SpotifySource::pump(RingBuffer& ring) {
-    if (state_.load(std::memory_order_acquire) != PlaybackState::playing) return;
-
+    // do not return early if paused - keep draining the pipe
     std::scoped_lock lk{mu_};
     Pipe* p = pipe_.get();
     if (!p || !p->read_pipe || p->ended) return;
+
+    // check if currently playing or paused
+    bool is_playing = (state_.load(std::memory_order_acquire) == PlaybackState::playing);
 
     // non-blocking parse of track metadata
     if (p->err_pipe) {
@@ -301,6 +357,11 @@ void SpotifySource::pump(RingBuffer& ring) {
                 
                 // strip Windows carriage return if it exists
                 if (!line.empty() && line.back() == '\r') line.pop_back();
+
+                // ignore the pre-fetch loading event
+                if (line.find("] Loading <") != std::string::npos) {
+                    continue; 
+                }
                 
                 // look for the track load event signature
                 const std::string marker = "librespot_playback::player] <";
@@ -309,40 +370,113 @@ void SpotifySource::pump(RingBuffer& ring) {
                     size_t start = m_pos + marker.length();
                     size_t end = line.find("> (", start);
                     if (end != std::string::npos) {
-                        info_.title = line.substr(start, end - start);
-                        // optionally set the artist field since librespot clumps them together
-                        info_.artist = "Spotify Connect"; 
+                        std::string parsed_title = line.substr(start, end - start);
+                        
+                        // extract the duration e.g. "> (___ ms) loaded"
+                        uint64_t parsed_duration = 0;
+                        size_t ms_start = end + 3; 
+                        size_t ms_end = line.find(" ms) loaded", ms_start);
+                        if (ms_end != std::string::npos) {
+                            try {
+                                parsed_duration = std::stoull(line.substr(ms_start, ms_end - ms_start));
+                            } catch (...) {}
+                        }
+
+                        // calculate if this is a manual skip from the app
+                        // 32 seconds = 32,000 ms = 6,144,000 bytes
+                        uint64_t track_bytes = p->track_duration_ms * 192;
+                        bool is_external_skip = (p->track_duration_ms > 0) && (p->bytes_consumed + 6144000 < track_bytes);
+
+                        // if initial playback, manually requested a skip or early external skip, apply immediately
+                        if (info_.title == "Ready to Cast" || info_.title == "Streaming via Spotify Connect" || p->force_next_metadata || is_external_skip) {
+                            info_.title = parsed_title;
+                            info_.artist = "Spotify Connect";
+                            info_.duration_ms = parsed_duration;
+                            p->track_duration_ms = parsed_duration; 
+                            p->bytes_consumed = 0;
+                            p->force_next_metadata = false; // reset flag
+                            p->has_pending = false; // clear just in case
+                            p->stall_ticks = 0;
+                        } else {
+                            // queue it for the gapless transition
+                            p->pending_title = parsed_title;
+                            p->pending_duration_ms = parsed_duration;
+                            p->has_pending = true;
+                        }
                     }
                 }
             }
         }
     }
 
+    // if paused, stop executing here
+    // the 4KB pipe will fill instantly, blocking ffmpeg and librespot
+    // pauses the stream and prevents time desync
+    if (!is_playing) {
+        return; 
+    }
+
     // cap the ring buffer at 0.15 seconds (150ms)
     // 48000Hz * 2ch * 2 bytes * 0.15s = 28800 bytes
     const std::size_t MAX_BUFFER_BYTES = 28800;
-
-    if (ring.readable() >= MAX_BUFFER_BYTES) return;
 
     DWORD avail = 0;
     if (!PeekNamedPipe(p->read_pipe, nullptr, 0, nullptr, &avail, nullptr)) {
         p->ended = true;
         return;
     }
+
+    if (avail == 0) {
+        p->stall_ticks++;
+        // if pipe is dry for just 5 ticks (~80ms) and pending track,
+        // the user manually skipped during the final 30 seconds of the song
+        if (p->stall_ticks > 5 && p->has_pending) {
+            if (p->has_pending) {
+                info_.title = p->pending_title;
+                info_.duration_ms = p->pending_duration_ms;
+                p->track_duration_ms = p->pending_duration_ms;
+                
+                p->bytes_consumed = 0;
+                p->has_pending = false;
+            } // catch-all for extreme network lag / dead stream (stall for > 500ms)
+            else {
+                p->force_next_metadata = true;
+                p->bytes_consumed = 0; 
+            }
+        }
+    } else {
+        p->stall_ticks = 0;
+    }
+
+    // natural gapless transition (192 bytes = 1 millisecond)
+    if (p->has_pending && p->track_duration_ms > 0) {
+        uint64_t track_bytes = p->track_duration_ms * 192;
+        if (p->bytes_consumed >= track_bytes) {
+            info_.title = p->pending_title;
+            info_.duration_ms = p->pending_duration_ms;
+            p->track_duration_ms = p->pending_duration_ms;
+            
+            // subtract to carry the remainder (keeps timer perfect)
+            p->bytes_consumed -= track_bytes; 
+            p->has_pending = false;
+            p->stall_ticks = 0;
+        }
+    }
     
     while (avail > 0) {
-        // stop reading if we hit our buffer cap
+        std::size_t want = (std::size_t)avail;
+        
         if (ring.readable() >= MAX_BUFFER_BYTES) break;
 
         const std::size_t writable = ring.writable();
         if (writable < 4) break;
         
-        std::size_t want = std::min<std::size_t>(writable, avail);
+        want = std::min<std::size_t>(writable, want);
         
         // do not read more than what keeps us under the buffer limit
         std::size_t allowed = MAX_BUFFER_BYTES - ring.readable();
         if (want > allowed) want = allowed;
-        
+    
         if (want > 4096) want = 4096;
         
         std::byte buf[4096];
@@ -351,9 +485,26 @@ void SpotifySource::pump(RingBuffer& ring) {
             p->ended = true;
             return;
         }
-        ring.write(buf, got);
+        
+        // only pump to the game engine and tick the timer if playing
+        if (is_playing) {
+            ring.write(buf, got);
+            p->bytes_consumed += got; // track exact bytes pushed to stream
+        }
+        
+       
         avail = avail > got ? avail - got : 0;
     }
-}
 
+    // UI timer sync calculation
+    // 48000 Hz * 2 channels * 16-bit (2 bytes) = 192,000 bytes/sec -> 192 bytes/ms
+    uint64_t total_played = p->bytes_consumed;
+    uint64_t unplayed_latency = ring.readable();
+    
+    if (total_played > unplayed_latency) {
+        info_.position_ms = (total_played - unplayed_latency) / 192;
+    } else {
+        info_.position_ms = 0;
+    }
+}
 } // namespace fh6::sources
