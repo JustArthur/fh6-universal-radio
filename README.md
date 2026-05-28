@@ -17,7 +17,7 @@ An open-source radio mod for **Forza Horizon 6**. Adds a new in-game radio stati
 
 - **Local files**: point it at any folder. MP3 / FLAC / WAV / OGG play out of the box; M4A / AAC / OPUS / WMA / etc. play if `ffmpeg` is installed (same binary as YouTube Music below).
 - **YouTube Music**: paste any video, playlist, or YT Music URL from the dashboard.
-- **Jellyfin**: stream playlists from your own Jellyfin server. Configure server URL, API key, and user ID under **Settings > Jellyfin**, then cast a playlist by ID from the dashboard.
+- **Jellyfin**: stream playlists from your own Jellyfin server.
 - **In-game radio integration**: audio is routed through FH6's radio bus, fades with menus and reacts to in-game volume like every other station.
 - **Live dashboard** at `http://localhost:8420`: switch source, transport controls, volume, settings.
 - **Race start action**: on race begin, advance to next track, restart the current one, or leave it alone.
@@ -32,16 +32,24 @@ An open-source radio mod for **Forza Horizon 6**. Adds a new in-game radio stati
 3. Extract the ZIP into your Forza Horizon 6 install folder (next to `forzahorizon6.exe`). Overwrite when prompted.
 4. Launch the game. In **Audio settings**, set **Radio DJ = Off** and **Streamer Mode = On**.
 5. Cycle through radio stations until you land on the new one.
-6. Open <http://localhost:8420> in any browser on the same machine or LAN.
+6. Open <http://localhost:8420> in any browser on the same machine. From another device on the same network, use your PC's local IP (e.g. `http://192.168.1.42:8420`), run `ipconfig` in a Command Prompt to find it.
 
 ### YouTube Music
 
-YouTube playback requires three external tools on disk:
+YouTube playback requires three external tools. Open a **Command Prompt** and run:
 
-- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp/releases) and [`ffmpeg`](https://www.gyan.dev/ffmpeg/builds/) either on your `PATH`, or pointed at explicitly in the dashboard under **Settings > YouTube Music**.
-- [`deno`](https://deno.com/) on `PATH`. Install with `winget install DenoLand.Deno` (or `irm https://deno.land/install.ps1 | iex`).
+```
+winget install yt-dlp.yt-dlp
+winget install Gyan.FFmpeg
+winget install DenoLand.Deno
+```
 
-Private/age-restricted content also needs a Netscape `cookies.txt` exported from your browser.
+Then restart the game. If the tools still aren't found, reboot your PC so the `PATH` updates properly.
+
+`yt-dlp` can also be pointed at explicitly in the dashboard under **Settings > YouTube Music** if you prefer a manual install.
+`ffmpeg` can also be configured under **Settings > General > ffmpeg path**.
+
+Private/age-restricted content also needs a Netscape `cookies.txt` exported from your browser. Use an extension like **Get cookies.txt LOCALLY** to export it.
 
 ## Uninstall
 
