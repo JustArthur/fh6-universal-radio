@@ -354,6 +354,7 @@ bool LocalFileSource::restart_current() {
     if (!dec_ || !dec_->any_open()) return false;
     if (dec_->ma_open) {
         if (ma_decoder_seek_to_pcm_frame(&dec_->ma, 0) != MA_SUCCESS) return false;
+        dec_->ma_eof = false;
     } else {
         // ffmpeg pipe is forward-only: re-open the same track from t=0.
         if (!open_track(cursor_)) return false;
