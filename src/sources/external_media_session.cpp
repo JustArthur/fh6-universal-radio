@@ -68,19 +68,20 @@ std::string display_name(std::string_view app_id) {
 std::optional<media::GlobalSystemMediaTransportControlsSession>
 pick_session(media::GlobalSystemMediaTransportControlsSessionManager const& manager,
              std::string_view selected_id) {
-    const auto current = manager.GetCurrentSession();
+    const auto sessions = manager.GetSessions();
 
     if (!selected_id.empty()) {
-        const auto sessions = manager.GetSessions();
+        // A configured selection must match exactly. Never fall back to another
+        // app, or we'd read or control the wrong one while the chosen session
+        // is momentarily absent (e.g. when it's paused).
         for (uint32_t i = 0; i < sessions.Size(); ++i) {
             auto session = sessions.GetAt(i);
             if (s(session.SourceAppUserModelId()) == selected_id) return session;
         }
+        return std::nullopt;
     }
 
-    if (current) return current;
-
-    const auto sessions = manager.GetSessions();
+    if (const auto current = manager.GetCurrentSession()) return current;
     if (sessions.Size() > 0) return sessions.GetAt(0);
     return std::nullopt;
 }

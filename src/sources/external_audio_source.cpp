@@ -28,6 +28,11 @@ constexpr uint32_t kTargetSampleRate = 48000;
 constexpr uint32_t kTargetChannels = 2;
 constexpr std::size_t kMaxQueuedSamples = kTargetSampleRate * kTargetChannels * 2;
 
+// Upper bound on audio in flight (ring + queue) so captured audio stays close
+// to real time and the live media-session metadata lines up with what's heard.
+// 250 ms at 48 kHz stereo.
+constexpr std::size_t kMaxInFlightSamples = kTargetSampleRate * kTargetChannels / 4;
+
 template <class T> class ComPtr {
 public:
  ComPtr() = default;
@@ -562,17 +567,29 @@ void ExternalAudioSource::pump(RingBuffer& ring) {
  std::vector<int16_t> chunk;
  {
   std::scoped_lock lk{queue_mu_};
-  const std::size_t available = pcm_queue_.size() - queue_offset_;
+  std::size_t available = pcm_queue_.size() - queue_offset_;
   if (available == 0) return;
+
+  // Real-time capture must not accumulate latency: the media-session metadata
+  // is read live, so any audio backlog makes the next track show that far
+  // ahead of when it's heard. Cap what's in flight (ring + queue) and skip the
+  // oldest captured samples past it rather than letting the ring fill deep.
+  const std::size_t backlog = ring.readable() / sizeof(int16_t);
+  if (backlog + available > kMaxInFlightSamples) {
+   const std::size_t drop =
+    std::min(backlog + available - kMaxInFlightSamples, available) & ~std::size_t{1};
+   queue_offset_ += drop;
+   available -= drop;
+  }
 
   std::size_t writable_samples = ring.writable() / sizeof(int16_t);
   writable_samples &= ~std::size_t{1};
   const std::size_t to_write = std::min(available, writable_samples);
-  if (to_write == 0) return;
-
-  chunk.assign(pcm_queue_.begin() + static_cast<std::ptrdiff_t>(queue_offset_),
-   pcm_queue_.begin() + static_cast<std::ptrdiff_t>(queue_offset_ + to_write));
-  queue_offset_ += to_write;
+  if (to_write > 0) {
+   chunk.assign(pcm_queue_.begin() + static_cast<std::ptrdiff_t>(queue_offset_),
+    pcm_queue_.begin() + static_cast<std::ptrdiff_t>(queue_offset_ + to_write));
+   queue_offset_ += to_write;
+  }
   compact_queue_locked();
  }
 

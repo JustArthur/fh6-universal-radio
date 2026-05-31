@@ -20,10 +20,12 @@ constexpr int kDiscoveryTries  = 120; // 10-minute budget; the radio system
 // before we conclude the game tore the radio channel down. 1s @ 20ms.
 constexpr int kStaleTickThreshold = 50;
 
-// Shorter freeze, ~160 ms @ 20ms, before we treat the station as silenced
-// (pause menu, radio off) and tell the active source so it can mirror the
-// state onto any live external player it wraps.
-constexpr int kInaudibleTicks = 8;
+// Frozen-read ticks before we treat the station as genuinely silenced (pause
+// menu, radio off) and tell the active source to mirror it onto any live
+// player it wraps. Must clear the stall-retune rebuild window (~1s retune +
+// up to ~2s reacquire), so a rewind or race transition that briefly tears the
+// channel down and rebuilds it doesn't read as a pause. 3.5s @ 20ms.
+constexpr int kInaudibleTicks = 175;
 
 // Minimum gap between two off/on station toggles. The toggle blocks ~300ms
 // and the game needs a moment to reallocate the channel, so we leave it well
@@ -83,9 +85,13 @@ void ControlLoop::run(const std::stop_token& tok) {
         bridge_.retarget_if_needed();
         bridge_.manager().pump_once();
 
+        // Skip refreshing while the station is silenced (pause menu, rewind):
+        // the HUD isn't shown, and freezing the value lets the dedup in
+        // MetadataInjector swallow the resume so the game doesn't re-pop its
+        // now-playing banner on every pause/rewind.
         if (++meta_tick >= kMetaEveryNTicks) {
             meta_tick = 0;
-            push_metadata();
+            if (radio_audible_) push_metadata();
         }
 
         // Staleness watchdog: while a source is actively producing audio,
@@ -116,18 +122,37 @@ void ControlLoop::run(const std::stop_token& tok) {
             stale_ticks_ = 0;
         }
 
-        // Audibility edge: while a source is producing, no read_callback
-        // progress means the game silenced our station. Report the transition
-        // so sources wrapping a live player (External Audio) pause/resume it.
+        // Audibility edge: while a source is producing, a frozen read_callback
+        // means the game silenced our station. Report the transition so a
+        // source wrapping a live player (External Audio) pauses/resumes it.
+        // Re-arm on every source change and only count once that source has
+        // actually been read, so stale loop state can't fire a phantom edge.
+        // The threshold sits above the stall-retune rebuild window, so the
+        // channel churn from a rewind or race transition (which the watchdog
+        // above heals) never trips it; only sustained silence does.
         if (active && busy) {
-            idle_ticks_        = (c == prev_calls_) ? idle_ticks_ + 1 : 0;
+            if (active != audible_source_) {
+                audible_source_ = active;
+                idle_ticks_     = 0;
+                audible_primed_ = false;
+                radio_audible_  = true;
+            }
+            if (c != prev_calls_) {
+                idle_ticks_     = 0;
+                audible_primed_ = true;
+            } else if (audible_primed_) {
+                ++idle_ticks_;
+            }
             const bool audible = idle_ticks_ < kInaudibleTicks;
             if (audible != radio_audible_) {
                 radio_audible_ = audible;
                 active->on_radio_audible(audible);
             }
         } else {
-            idle_ticks_ = 0;
+            idle_ticks_     = 0;
+            audible_primed_ = false;
+            radio_audible_  = true;
+            audible_source_ = nullptr;
         }
 
         run_playback_state_machines(std::chrono::steady_clock::now());
