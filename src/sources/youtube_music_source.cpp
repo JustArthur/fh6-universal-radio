@@ -38,7 +38,7 @@ std::string drain_to_eof(HANDLE pipe) {
 }
 
 bool is_playlist_url(std::string_view url) {
-    return url.find("playlist?") != std::string_view::npos || url.find("list=") != std::string_view::npos;;
+    return url.find("playlist?") != std::string_view::npos || url.find("list=") != std::string_view::npos;
 }
 
 std::string watch_url_for_id(std::string_view id) {
@@ -426,9 +426,7 @@ bool YouTubeMusicSource::skip_next() {
     std::scoped_lock lk{mu_};
     if (queue_.empty()) return false;
     consecutive_failed_ = 0;
-    const auto n = static_cast<std::ptrdiff_t>(queue_.size());
-    auto i       = static_cast<std::ptrdiff_t>(queue_idx_) + 1;
-    queue_idx_   = static_cast<std::size_t>(((i % n) + n) % n);
+    queue_idx_ = next_queue_idx_locked();
     if (!promote_prefetch_locked(queue_idx_)) start_pipe_locked();
     if (!pipe_) return false;
     state_.store(PlaybackState::playing, std::memory_order_release);
@@ -445,9 +443,7 @@ void YouTubeMusicSource::next() {
     std::scoped_lock lk{mu_};
     if (queue_.empty()) return;
     consecutive_failed_ = 0;   // user override clears the give-up state
-    const auto n = static_cast<std::ptrdiff_t>(queue_.size());
-    auto i       = static_cast<std::ptrdiff_t>(queue_idx_) + 1;
-    queue_idx_   = static_cast<std::size_t>(((i % n) + n) % n);
+    queue_idx_ = next_queue_idx_locked();
     if (!promote_prefetch_locked(queue_idx_)) start_pipe_locked();
     if (pipe_) state_.store(PlaybackState::playing, std::memory_order_release);
 }
@@ -563,9 +559,7 @@ void YouTubeMusicSource::pump(RingBuffer& ring) {
     // ---- PCM drain ----
     auto advance_to_next = [&] {
         if (queue_.empty()) { stop_pipe_locked(); return; }
-        const auto n = static_cast<std::ptrdiff_t>(queue_.size());
-        auto i       = static_cast<std::ptrdiff_t>(queue_idx_) + 1;
-        queue_idx_   = static_cast<std::size_t>(((i % n) + n) % n);
+        queue_idx_ = next_queue_idx_locked();
         if (!promote_prefetch_locked(queue_idx_)) start_pipe_locked();
         if (pipe_) state_.store(PlaybackState::playing, std::memory_order_release);
     };

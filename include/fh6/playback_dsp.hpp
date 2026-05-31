@@ -1,7 +1,5 @@
 #pragma once
 
-#include "fh6/config.hpp"
-
 #include <algorithm>
 #include <array>
 #include <atomic>

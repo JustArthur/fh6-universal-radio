@@ -374,10 +374,18 @@ struct HttpServer::Impl {
         if (thr.joinable()) thr.join();
     }
 
+    json build_sources() const {
+        auto* a        = mgr.active();
+        json available = json::array();
+        for (auto* s : mgr.sources_snapshot()) available.push_back(source_to_json(s));
+        return json{
+            {"active", a ? std::string{a->name()} : ""},
+            {"available", std::move(available)},
+        };
+    }
+
     json build_state() const {
-        auto* a      = mgr.active();
-        json sources = json::array();
-        for (auto* s : mgr.sources_snapshot()) sources.push_back(source_to_json(s));
+        auto* a = mgr.active();
         return json{
             {"game", json{{"attached", true}, {"injector_ready", true}}},
             {"audio",
@@ -392,21 +400,13 @@ struct HttpServer::Impl {
                  {"ring_avail", mgr.ring().readable()},
                  {"ring_capacity", mgr.ring().capacity()},
              }},
-            {"sources",
-             {
-                 {"active", a ? std::string{a->name()} : ""},
-                 {"available", std::move(sources)},
-             }},
+            {"sources", build_sources()},
             {"track", a ? track_to_json(a->current_track()) : json::object()},
             {"errors", json::array()},
         };
     }
 
-    IAudioSource* find(std::string_view name) const {
-        for (auto* s : mgr.sources_snapshot())
-            if (s->name() == name) return s;
-        return nullptr;
-    }
+    IAudioSource* find(std::string_view name) const { return mgr.find(name); }
     template <class T> T* find_typed(std::string_view name) const {
         return dynamic_cast<T*>(find(name));
     }
@@ -498,7 +498,7 @@ struct HttpServer::Impl {
 
         if (m == "GET" && p == "/api/state")         return ok(build_state());
         if (m == "GET" && p == "/api/events")        return send_event_snapshot(client);
-        if (m == "GET" && p == "/api/sources")       return ok(build_state()["sources"]);
+        if (m == "GET" && p == "/api/sources")       return ok(build_sources());
         if (m == "GET" && p == "/api/config")        return ok(config_to_json(store.snapshot()));
         if (m == "GET" && p == "/api/source/local_files/playlist") {
             auto* lf = find_typed<sources::LocalFileSource>("local_files");

@@ -1,7 +1,5 @@
 #include "fh6/sources/external_media_session.hpp"
 
-#include "fh6/log.hpp"
-
 #include <algorithm>
 #include <chrono>
 

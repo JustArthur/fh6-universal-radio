@@ -2,7 +2,6 @@
 
 #include "fh6/fmod/pe_image.hpp"
 #include "fh6/fmod/radio_discovery.hpp"
-#include "fh6/ring_buffer.hpp"
 
 #include <atomic>
 #include <cstdint>
