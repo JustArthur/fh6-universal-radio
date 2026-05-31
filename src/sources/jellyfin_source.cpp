@@ -150,11 +150,11 @@ std::optional<std::vector<JellyfinTrack>> fetch_tracks(const JellyfinConfig& cfg
             t.id = item.value("Id", "");
             if (t.id.empty()) continue;
             t.title = item.value("Name", "Unknown Track");
-            if (auto a = item.find("AlbumArtist"); a != item.end() && a->is_string())
-                t.artist = a->get<std::string>();
-            else if (auto a = item.find("Artists");
-                     a != item.end() && a->is_array() && !a->empty())
-                t.artist = a->front().get<std::string>();
+            if (auto aa = item.find("AlbumArtist"); aa != item.end() && aa->is_string())
+                t.artist = aa->get<std::string>();
+            else if (auto ar = item.find("Artists");
+                     ar != item.end() && ar->is_array() && !ar->empty())
+                t.artist = ar->front().get<std::string>();
             t.album = item.value("Album", "");
             if (auto r = item.find("RunTimeTicks");
                 r != item.end() && r->is_number_unsigned())
