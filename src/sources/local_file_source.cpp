@@ -125,6 +125,20 @@ bool ieq_str(std::string_view a, std::string_view b) noexcept {
     return true;
 }
 
+bool decodes_as(UINT cp, std::string_view s) noexcept {
+    return !s.empty() &&
+           MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, s.data(), (int)s.size(), nullptr, 0) > 0;
+}
+
+std::string tag_to_utf8(std::string s) {
+    if (s.empty() || decodes_as(CP_UTF8, s)) return s;
+    if (!decodes_as(932, s)) return {};
+    const int n = MultiByteToWideChar(932, 0, s.data(), (int)s.size(), nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(932, 0, s.data(), (int)s.size(), w.data(), n);
+    return subprocess::narrow(w);
+}
+
 // `ffmpeg -i <file>` with no output specified exits non-zero but first dumps
 // the input header (Duration + container Metadata block) to stderr.
 ProbedMetadata probe_metadata(const std::wstring& ff_bin, const std::filesystem::path& file,
@@ -181,6 +195,10 @@ ProbedMetadata probe_metadata(const std::wstring& ff_bin, const std::filesystem:
             out.disc_no = parse_leading_int(val);
         }
     }
+    // Normalize every text tag to UTF-8 so the index and WebUI never see raw
+    // legacy bytes; undecodable values drop to "" and fall back to the filename.
+    for (std::string* s : {&out.title, &out.artist, &out.album, &out.album_artist})
+        *s = tag_to_utf8(std::move(*s));
     return out;
 }
 
@@ -196,6 +214,11 @@ bool path_within(const std::string& child, const std::string& parent) noexcept {
     if (parent.empty() || child.size() < parent.size()) return false;
     if (!child.starts_with(parent)) return false;
     return child.size() == parent.size() || child[parent.size()] == '/';
+}
+
+std::string path_utf8(const std::filesystem::path& p) {
+    const auto u8 = p.u8string();
+    return std::string{u8.begin(), u8.end()};
 }
 
 std::mt19937& thread_rng() {
@@ -469,7 +492,7 @@ void LocalFileSource::save_index() {
     {
         std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
         if (!os) return;
-        os << j.dump();
+        os << j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     }
     std::filesystem::rename(tmp, index_path_, ec);
     if (ec) {
@@ -500,7 +523,7 @@ LocalFileSource::order_album_by_tags(const std::vector<std::filesystem::path>& i
         for (const auto& p : in) {
             std::string gkey;
             int disc_no = 0, track_no = 0;
-            auto it = index_.find(p.string());
+            auto it = index_.find(path_utf8(p));
             if (it != index_.end() &&
                 !(it->second.album.empty() && it->second.album_artist.empty())) {
                 const auto& m = it->second;
@@ -539,7 +562,7 @@ void LocalFileSource::index_worker(const std::vector<std::filesystem::path>& pat
         std::error_code ec;
         auto wt               = std::filesystem::last_write_time(p, ec);
         const std::int64_t mt = ec ? 0 : (std::int64_t)wt.time_since_epoch().count();
-        const auto key        = p.string();
+        const std::string key = path_utf8(p);
         {
             std::scoped_lock il{index_mu_};
             auto it = index_.find(key);
@@ -623,8 +646,8 @@ std::unique_ptr<LocalFileSource::Decoder> LocalFileSource::open_decoder_locked(s
         return nullptr;
     }
 
-    if (d->info.title.empty()) d->info.title = path.stem().string();
-    if (d->info.album.empty()) d->info.album = path.parent_path().filename().string();
+    if (d->info.title.empty()) d->info.title = path_utf8(path.stem());
+    if (d->info.album.empty()) d->info.album = path_utf8(path.parent_path().filename());
 
     float gain_db = std::numeric_limits<float>::quiet_NaN();
     float peak    = std::numeric_limits<float>::quiet_NaN();
@@ -1061,8 +1084,8 @@ LocalFileSource::QueueSnapshot LocalFileSource::queue_snapshot() const {
     snap.entries.reserve(playlist_.size());
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
         const auto& p = playlist_[i];
-        QueueEntry e{i, p.stem().string(), {}, p.parent_path().filename().string()};
-        if (auto it = index_.find(p.string()); it != index_.end()) {
+        QueueEntry e{i, path_utf8(p.stem()), {}, path_utf8(p.parent_path().filename())};
+        if (auto it = index_.find(path_utf8(p)); it != index_.end()) {
             if (!it->second.title.empty()) e.title = it->second.title;
             e.artist = it->second.artist;
         }
@@ -1072,10 +1095,6 @@ LocalFileSource::QueueSnapshot LocalFileSource::queue_snapshot() const {
 }
 
 std::vector<FsEntry> enumerate_dir(const std::filesystem::path& dir) {
-    auto u8 = [](const std::filesystem::path& p) {
-        auto s = p.u8string();
-        return std::string{s.begin(), s.end()};
-    };
     std::vector<FsEntry> out;
     if (dir.empty()) {
         const DWORD mask = GetLogicalDrives();
@@ -1092,8 +1111,8 @@ std::vector<FsEntry> enumerate_dir(const std::filesystem::path& dir) {
         std::error_code de;
         if (!e.is_directory(de)) continue;
         FsEntry fe;
-        fe.name = u8(e.path().filename());
-        fe.path = u8(e.path());
+        fe.name = path_utf8(e.path().filename());
+        fe.path = path_utf8(e.path());
         // Cheap "has children": stop at the first subdirectory found.
         std::error_code ce;
         std::filesystem::directory_iterator sub(
