@@ -103,12 +103,24 @@ void ControlLoop::run(const std::stop_token& tok) {
         if (busy && c == prev_calls_) {
             if (++stale_ticks_ >= kStaleTickThreshold) {
                 stale_ticks_ = 0;
-                if (now - last_retune_ >= kRetuneCooldown && game_state_.read().on_target_station &&
-                    game_state_.retune_streamer_station()) {
-                    last_retune_ = now;
-                    // The toggle may hand us a freshly-allocated RadioStreamFmod;
-                    // re-point at the live one so retarget_if_needed installs there.
-                    acquire_target();
+
+                // verify the channel is actually dead, not just paused
+                auto disc = discover_radio_instances(img_);
+                const RadioInstance* current = select_instance(disc);
+                const bool channel_dead = !current || !bridge_.channel_handle_alive(current->radio_stream);
+
+                if (channel_dead) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - last_retune_ >= kRetuneCooldown && game_state_.read().on_target_station &&
+                        game_state_.retune_streamer_station()) {
+                        last_retune_ = now;
+                        // The toggle may hand us a freshly-allocated RadioStreamFmod;
+                        // re-point at the live one so retarget_if_needed installs there.
+                        acquire_target();
+                    }
+                } else {
+                    // channel is alive, the game is just paused - no retune
+                    log::info("[ctrl] stall watchdog bypassed: game is paused (channel is alive)");
                 }
             }
         } else {
