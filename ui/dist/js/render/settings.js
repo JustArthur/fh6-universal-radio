@@ -77,7 +77,20 @@ function buildField(section, spec, cfg) {
 }
 
 export function renderSettings(form, cfg) {
+    // Toggle couleur dynamique
+    const dynamicColor = localStorage.getItem("fh6-dynamic-color") !== "false";
+    const checkbox = el("input", { type: "checkbox", id: "f-dynamic-color" });
+    checkbox.checked = dynamicColor;
+    const interfaceFieldset = el("fieldset", {}, [
+        el("legend", {}, "Interface"),
+        el("div", { class: "field checkbox" }, [
+            checkbox,
+            el("label", { for: "f-dynamic-color" }, "Dynamic accent color"),
+        ]),
+    ]);
+
     form.replaceChildren(
+        interfaceFieldset,
         ...SCHEMA.map(([section, title, fields]) => {
             const fieldset = el("fieldset", {}, [el("legend", {}, title)]);
             for (const spec of fields) fieldset.append(buildField(section, spec, cfg));

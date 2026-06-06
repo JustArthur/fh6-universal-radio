@@ -12,6 +12,7 @@ import { createDeps } from "./render/deps.js";
 import { createExternalAudio } from "./render/externalAudio.js";
 import { createLocalFiles } from "./render/localFiles.js";
 import { createOnlineRadio } from "./render/onlineRadio.js";
+import { extractDominantColor } from "./render/nowPlaying.js";
 
 let state = null;
 let cfg = null;
@@ -227,6 +228,17 @@ $("#save-config").addEventListener("click", async () => {
         render();
         toast("Saved");
         closeDrawer();
+
+        const dynamicCheckbox = document.querySelector("#f-dynamic-color");
+        const enabled = dynamicCheckbox ? dynamicCheckbox.checked : true;
+        localStorage.setItem("fh6-dynamic-color", String(enabled));
+        const img = refs.np.img;
+        if (enabled && img?.complete && img?.naturalWidth) {
+            const color = extractDominantColor(img);
+            if (color) document.documentElement.style.setProperty("--accent", color);
+        } else if (!enabled) {
+            document.documentElement.style.setProperty("--accent", "var(--color-sunset-yellow)");
+        }
     } catch (e) {
         toast(e.message, true);
     }

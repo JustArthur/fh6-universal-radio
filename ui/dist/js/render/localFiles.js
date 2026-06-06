@@ -162,7 +162,7 @@ export function createLocalFiles(main, ctx) {
 					el("label", { class: "lf-mode" }, ["Repeat", repeatSelect]),
 				]),
 			]),
-			/* ---- Pied de l'éditeur ---- */
+			
 			el("div", { class: "row lf-editor-foot" }, [saveBtn]),
 		]),
 		el("div", { class: "lf-queue" }, [
@@ -379,6 +379,9 @@ export function createLocalFiles(main, ctx) {
 				el("li", { class: "muted" }, terms.length ? "No matches." : "Queue is empty."),
 			);
 		}
+
+		const current = trackList.querySelector(".lf-track.current");
+		if (current) trackList.scrollTo({ top: current.offsetTop - trackList.offsetTop - trackList.clientHeight / 2 + current.clientHeight / 2, behavior: "smooth" });
 	}
 
 	// --- events ---------------------------------------------------------------
