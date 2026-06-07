@@ -8,30 +8,6 @@
     }
 }
 
-@keyframes rise {
-    from {
-        transform: translate(-50%, 16px);
-        opacity: 0;
-    }
-
-    to {
-        transform: translate(-50%, 0);
-        opacity: 1;
-    }
-}
-
-@keyframes pulse {
-
-    0%,
-    100% {
-        opacity: 1;
-    }
-
-    50% {
-        opacity: 0.45;
-    }
-}
-
 @keyframes cover-pulse {
 
     0%,
@@ -41,5 +17,17 @@
 
     50% {
         box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+    }
+}
+
+@keyframes eq-bounce {
+
+    0%,
+    100% {
+        transform: scaleY(0.4);
+    }
+
+    50% {
+        transform: scaleY(1);
     }
 }

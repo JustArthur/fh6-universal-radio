@@ -351,7 +351,16 @@ export function createLocalFiles(main, ctx) {
 					"aria-hidden": "true",
 				});
 				const coverWrap = el("div", { class: "lf-track-cover" }, [coverImg]);
-				if (!t.cover_url) coverWrap.dataset.noart = "1";
+				if (!t.cover_url) {
+					coverWrap.dataset.noart = "1";
+					coverWrap.append(
+						el("div", { class: "lf-eq" }, [
+							el("span", { class: "lf-eq-bar" }),
+							el("span", { class: "lf-eq-bar" }),
+							el("span", { class: "lf-eq-bar" }),
+						])
+					);
+				}
 
 				const infoWrap = el("div", { class: "lf-track-info" }, [
 					el("span", { class: "lf-track-title" }, t.title || "Titre inconnu"),
@@ -470,14 +479,14 @@ export function createLocalFiles(main, ctx) {
 	let lastTrackCount = -1;
 	let lastIndexVersion = -1;
 	let lastTrackTitle = "";
+
 	function render() {
 		const state = ctx.getState();
 		const isActive = state?.sources?.active === "local_files";
 		card.hidden = !isActive;
 		if (!isActive) return;
 		load();
-		// Refresh the queue (titles, artists, current-track highlight) when the
-		// track count changes (rescan) or the metadata index advances.
+
 		const lf = state?.sources?.available?.find(s => s.name === "local_files");
 		const tc = lf?.details?.track_count ?? -1;
 		const iv = lf?.details?.index_version ?? -1;

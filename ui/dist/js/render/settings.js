@@ -17,7 +17,7 @@ function buildField(section, spec, cfg) {
 
     if (type === "source-select") {
         const available = SOURCE_SECTIONS.filter(([s]) => cfg?.[s]?.enabled);
-        const options = [el("option", { value: "" }, "— none —")];
+        const options = [el("option", { value: "" }, "— None —")];
         for (const [value, name] of available) { options.push(el("option", { value, selected: cur === value }, name)); }
         if (cur && !available.some(([v]) => v === cur)) { options.push(el("option", { value: cur, selected: true }, cur)); }
         return el("div", { class: "field" }, [

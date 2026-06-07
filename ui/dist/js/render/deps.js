@@ -47,7 +47,7 @@ export function createDeps(main) {
       tools = Array.isArray(r.tools) ? r.tools : [];
       render();
     } catch {
-      /* keep last */
+      // keep last
     }
     setTimeout(poll, tools.some(t => t.downloading) ? 1000 : 5000);
   }

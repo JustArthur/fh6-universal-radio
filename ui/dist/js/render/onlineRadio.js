@@ -39,7 +39,7 @@ const writeJson = (key, value) => {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {
-    /* private mode / quota — recents are best-effort */
+    // private mode / quota — recents are best-effort
   }
 };
 
