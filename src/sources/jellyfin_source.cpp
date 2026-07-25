@@ -574,7 +574,14 @@ JellyfinSource::QueueSnapshot JellyfinSource::queue_snapshot() const {
     snap.cursor = current_idx_;
     snap.entries.reserve(queue_.size());
     for (std::size_t i = 0; i < queue_.size(); ++i) {
-        snap.entries.push_back({i, queue_[i].title, queue_[i].artist, queue_[i].album});
+        const auto& t = queue_[i];
+        std::string cover_url;
+        // Public image endpoint; the tag scopes caching and proves a cover exists.
+        if (!t.image_tag.empty() && !cfg_.server_url.empty()) {
+            cover_url = std::format("{}/Items/{}/Images/Primary?tag={}&fillWidth=96&quality=80",
+                                    cfg_.server_url, t.id, t.image_tag);
+        }
+        snap.entries.push_back({i, t.title, t.artist, t.album, std::move(cover_url)});
     }
     return snap;
 }

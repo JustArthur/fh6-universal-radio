@@ -65,6 +65,7 @@ public:
         std::string title;
         std::string artist;
         std::string album;
+        std::string cover_url; // empty when the item has no cover
     };
     struct QueueSnapshot {
         std::size_t cursor;

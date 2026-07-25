@@ -660,7 +660,9 @@ std::unique_ptr<LocalFileSource::Decoder> LocalFileSource::open_decoder_locked(s
     d->info.title       = std::move(meta.title);
     d->info.artist      = std::move(meta.artist);
     d->info.album       = std::move(meta.album);
-    d->art              = extract_cover(ff, path, worker_);
+    art_extract_slots_.acquire();
+    d->art = extract_cover(ff, path, worker_);
+    art_extract_slots_.release();
 
     ma_decoder_config mc = ma_decoder_config_init(ma_format_s16, 2, kSampleRate);
     if (ma_decoder_init_file(path.string().c_str(), &mc, &d->ma) == MA_SUCCESS) {
@@ -979,6 +981,44 @@ TrackInfo LocalFileSource::current_track() const {
     return info;
 }
 
+std::optional<ArtworkImage> LocalFileSource::artwork_for_index(std::size_t index) {
+    std::filesystem::path path;
+    {
+        std::scoped_lock lk{mu_};
+        if (index >= playlist_.size()) return std::nullopt;
+        path = playlist_[index];
+    }
+    const std::string key = path_utf8(path);
+
+    {
+        std::scoped_lock lk{art_cache_mu_};
+        if (auto it = art_cache_.find(key); it != art_cache_.end()) {
+            if (it->second.bytes.empty()) return std::nullopt; // cached "no cover"
+            return it->second;
+        }
+    }
+
+    art_extract_slots_.acquire();
+    ArtworkImage art = extract_cover(ffmpeg_path_.empty() ? L"ffmpeg" : ffmpeg_path_.wstring(),
+                                     path, worker_);
+    art_extract_slots_.release();
+
+    {
+        std::scoped_lock lk{art_cache_mu_};
+        if (!art_cache_.contains(key)) {
+            if (art_cache_order_.size() >= kArtCacheCap) {
+                art_cache_.erase(art_cache_order_.front());
+                art_cache_order_.pop_front();
+            }
+            art_cache_order_.push_back(key);
+        }
+        art_cache_[key] = art;
+    }
+
+    if (art.mime.empty()) return std::nullopt;
+    return art;
+}
+
 std::optional<ArtworkImage> LocalFileSource::artwork() const {
     std::scoped_lock lk{mu_};
     if (dec_ && !dec_->art.bytes.empty()) return dec_->art;
@@ -1120,7 +1160,8 @@ LocalFileSource::QueueSnapshot LocalFileSource::queue_snapshot() const {
     snap.entries.reserve(playlist_.size());
     for (std::size_t i = 0; i < playlist_.size(); ++i) {
         const auto& p = playlist_[i];
-        QueueEntry e{i, path_utf8(p.stem()), {}, path_utf8(p.parent_path().filename())};
+        QueueEntry e{i, path_utf8(p.stem()), {}, path_utf8(p.parent_path().filename()),
+                    "/api/source/local_files/artwork?index=" + std::to_string(i)};
         if (auto it = index_.find(path_utf8(p)); it != index_.end()) {
             if (!it->second.title.empty()) e.title = it->second.title;
             e.artist = it->second.artist;

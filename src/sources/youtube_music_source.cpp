@@ -252,7 +252,7 @@ void YouTubeMusicSource::resolve_queue_locked() {
 
     if (!is_playlist_url(effective_url)) {
         // add a 0 at the end for the original_index
-        queue_.push_back({effective_url, "", "", 0}); 
+        queue_.push_back({effective_url, "", "", 0});
         queue_built_for_ = effective_url;
         return;
     }
@@ -310,9 +310,9 @@ void YouTubeMusicSource::resolve_queue_locked() {
             if (!id.empty() && id != "NA") {
                 const std::string title =
                     tab == std::string::npos ? std::string{} : line.substr(tab + 1);
-                
+
                 // add og_idx++ to the end of the push_back
-                queue_.push_back({watch_url_for_id(id), title, "", og_idx++}); 
+                queue_.push_back({watch_url_for_id(id), title, "", og_idx++});
             }
         }
         pos = (nl == std::string::npos) ? raw.size() : nl + 1;

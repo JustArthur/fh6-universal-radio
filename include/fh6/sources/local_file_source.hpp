@@ -11,6 +11,9 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <deque>
+#include <optional>
+#include <semaphore>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -64,9 +67,10 @@ public:
 
     struct QueueEntry {
         std::size_t index = 0;
-        std::string title;  // metadata title when indexed, else file stem
-        std::string artist; // metadata artist when indexed
-        std::string folder; // parent folder name
+        std::string title;     // metadata title when indexed, else file stem
+        std::string artist;    // metadata artist when indexed
+        std::string folder;    // parent folder name
+        std::string cover_url; // lazily-extracted via /api/source/local_files/artwork
     };
     struct QueueSnapshot {
         std::size_t cursor = 0;
@@ -76,6 +80,10 @@ public:
 
     TrackInfo current_track() const override;
     std::optional<ArtworkImage> artwork() const override;
+    // Extracts (and caches) the embedded cover for an arbitrary queue index,
+    // for the playlist-scroll thumbnails. Spawns ffmpeg on a cache miss, so
+    // callers should only hit this for tracks actually visible/lazy-loaded.
+    std::optional<ArtworkImage> artwork_for_index(std::size_t index);
     PlaybackState playback_state() const noexcept override {
         return state_.load(std::memory_order_acquire);
     }
@@ -174,6 +182,21 @@ private:
     EqualizerStage eq_;
     std::atomic<bool> volume_norm_{true};
     std::atomic<bool> prebuffer_next_{true};
+
+    // Bounded LRU cache of extracted queue-thumbnail covers, keyed by file
+    // path. Separate from the current-track decoder's art (dec_->art) since
+    // this addresses arbitrary, not-currently-loaded playlist entries.
+    mutable std::mutex art_cache_mu_;
+    std::unordered_map<std::string, ArtworkImage> art_cache_;
+    std::deque<std::string> art_cache_order_;
+    static constexpr std::size_t kArtCacheCap = 200;
+
+    // Caps concurrent ffmpeg cover-extraction spawns, shared between the
+    // playback path (open_decoder_locked, current + prefetch track) and
+    // queue-thumbnail HTTP requests. Uncapped, both sources spawning at once
+    // during a busy station switch could starve other ffmpeg launches on the
+    // system (observed as ffmpeg.exe failing to start, 0xc0000142).
+    std::counting_semaphore<2> art_extract_slots_{2};
 };
 
 } // namespace fh6::sources

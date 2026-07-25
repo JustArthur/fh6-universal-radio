@@ -765,10 +765,27 @@ struct HttpServer::Impl {
             auto snap   = lf->queue_snapshot();
             json tracks = json::array();
             for (const auto& e : snap.entries) {
-                tracks.push_back(
-                    json{{"index", e.index}, {"title", e.title}, {"folder", e.folder}});
+                tracks.push_back(json{{"index", e.index},
+                                      {"title", e.title},
+                                      {"artist", e.artist},
+                                      {"folder", e.folder},
+                                      {"cover_url", e.cover_url}});
             }
             return ok(json{{"cursor", snap.cursor}, {"tracks", tracks}});
+        }
+        if (m == "GET" && p.starts_with("/api/source/local_files/artwork")) {
+            auto* lf = find_typed<sources::LocalFileSource>("local_files");
+            if (!lf) return fail(404, "local_files not registered");
+            std::size_t index = static_cast<std::size_t>(-1);
+            if (auto pos = p.find("index="); pos != std::string::npos) {
+                try {
+                    index = std::stoull(p.substr(pos + 6));
+                } catch (...) {}
+            }
+            if (index == static_cast<std::size_t>(-1)) return fail(400, "missing index");
+            if (auto img = lf->artwork_for_index(index))
+                return send_response(client, 200, img->bytes, img->mime);
+            return fail(404, "no artwork");
         }
         if (m == "POST" && p == "/api/fs/browse") {
             auto j                    = req.body.empty() ? json::object() : json::parse(req.body);
@@ -1037,8 +1054,11 @@ struct HttpServer::Impl {
             auto snap = jf->queue_snapshot();
             json tracks = json::array();
             for (const auto& e : snap.entries) {
-                tracks.push_back(
-                    json{{"index", e.index}, {"title", e.title}, {"artist", e.artist}, {"album", e.album}});
+                tracks.push_back(json{{"index", e.index},
+                                      {"title", e.title},
+                                      {"artist", e.artist},
+                                      {"album", e.album},
+                                      {"cover_url", e.cover_url}});
             }
             return ok(json{{"cursor", snap.cursor}, {"tracks", tracks}});
         }
