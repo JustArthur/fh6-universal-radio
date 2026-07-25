@@ -24,9 +24,12 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <ranges>
+#include <semaphore>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 
 namespace fh6::http {
@@ -594,6 +597,9 @@ struct HttpServer::Impl {
     SOCKET srv_sock = INVALID_SOCKET;
     std::thread thr;
     std::atomic<int> inflight_{0}; // live per-connection worker threads
+    // Caps concurrent connection-handling threads (dashboard is single-user/
+    // LAN-scale; this is generous headroom, not a real capacity limit).
+    std::counting_semaphore<64> worker_slots_{64};
 
     Impl(AudioSourceManager& m, fmod_bridge::DSPBridge& b, ConfigStore& s, DependencyManager& d,
          uint16_t port, std::filesystem::path dist)
@@ -701,18 +707,41 @@ struct HttpServer::Impl {
 
             SOCKET client = accept(srv_sock, nullptr, nullptr);
             if (client == INVALID_SOCKET) continue;
+
+            // A slow/hung client (or one that opens a socket and never sends
+            // a request) must not tie up a worker thread forever -- read_request()
+            // already treats a recv() failure/timeout as "no request" and returns.
+            constexpr DWORD kRecvTimeoutMs = 10'000;
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&kRecvTimeoutMs),
+                      sizeof(kRecvTimeoutMs));
+
             // Thread-per-connection: a slow handler (e.g. Local Files artwork
             // extraction on a cache miss, which shells out to ffmpeg) must not
             // stall every other dashboard request behind it. The objects
             // handlers touch (mgr, store, sources) are already shared with the
             // audio control-loop thread, so they're safe under this added
-            // concurrency too.
+            // concurrency too. Bounded so a burst of connections can't spawn
+            // unlimited threads; excess connections simply wait for a slot,
+            // same as they'd queue in the listen() backlog otherwise.
+            worker_slots_.acquire();
             inflight_.fetch_add(1, std::memory_order_relaxed);
-            std::thread([this, client] {
-                handle(client);
-                closesocket(client);
+            auto release = [this] {
                 inflight_.fetch_sub(1, std::memory_order_release);
-            }).detach();
+                worker_slots_.release();
+            };
+            try {
+                std::thread([this, client, release] {
+                    handle(client);
+                    closesocket(client);
+                    release();
+                }).detach();
+            } catch (const std::system_error&) {
+                // Thread creation failed (resource exhaustion) -- don't take
+                // the server down over one connection.
+                log::warn("[http] failed to spawn worker thread for a connection");
+                closesocket(client);
+                release();
+            }
         }
 
         WSACleanup();
@@ -790,16 +819,28 @@ struct HttpServer::Impl {
             }
             return ok(json{{"cursor", snap.cursor}, {"tracks", tracks}});
         }
-        if (m == "GET" && p.starts_with("/api/source/local_files/artwork")) {
+        if (m == "GET" && p.starts_with("/api/source/local_files/artwork?")) {
             auto* lf = find_typed<sources::LocalFileSource>("local_files");
             if (!lf) return fail(404, "local_files not registered");
-            std::size_t index = static_cast<std::size_t>(-1);
-            if (auto pos = p.find("index="); pos != std::string::npos) {
-                try {
-                    index = std::stoull(p.substr(pos + 6));
-                } catch (...) {}
+
+            // Exact "index" key in the query string, value fully numeric
+            // (rejects e.g. ?notindex=0 or ?index=0junk instead of silently
+            // parsing a prefix).
+            const std::string_view query{p};
+            const auto qmark   = query.find('?');
+            std::size_t index  = static_cast<std::size_t>(-1);
+            for (auto part : std::views::split(query.substr(qmark + 1), '&')) {
+                std::string_view kv{part.begin(), part.end()};
+                if (!kv.starts_with("index=")) continue;
+                const auto val = kv.substr(6);
+                if (!val.empty() && std::ranges::all_of(val, [](char c) { return c >= '0' && c <= '9'; })) {
+                    try {
+                        index = std::stoull(std::string{val});
+                    } catch (...) {}
+                }
+                break;
             }
-            if (index == static_cast<std::size_t>(-1)) return fail(400, "missing index");
+            if (index == static_cast<std::size_t>(-1)) return fail(400, "missing or invalid index");
             if (auto img = lf->artwork_for_index(index))
                 return send_response(client, 200, img->bytes, img->mime);
             return fail(404, "no artwork");
