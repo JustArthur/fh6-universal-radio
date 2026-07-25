@@ -80,8 +80,9 @@ endif()
 
 # The installed cppwinrt headers still route through <experimental/coroutine>
 # regardless of /std:c++20; newer MSVC (14.41+) rejects that header unless
-# /await:strict is passed. Nothing else in the codebase uses coroutines, so
-# scoping the flag to this one translation unit is safe.
+# /await is passed (the newer /await:strict flag does NOT satisfy this
+# check on the toolchains we've tested). Nothing else in the codebase uses
+# coroutines, so scoping the flag to this one translation unit is safe.
 if(MSVC)
     set_source_files_properties(src/sources/external_media_session.cpp
         PROPERTIES COMPILE_OPTIONS "/await")

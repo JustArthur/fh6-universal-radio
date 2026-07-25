@@ -22,6 +22,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -592,6 +593,7 @@ struct HttpServer::Impl {
     std::atomic<bool> stopping{false};
     SOCKET srv_sock = INVALID_SOCKET;
     std::thread thr;
+    std::atomic<int> inflight_{0}; // live per-connection worker threads
 
     Impl(AudioSourceManager& m, fmod_bridge::DSPBridge& b, ConfigStore& s, DependencyManager& d,
          uint16_t port, std::filesystem::path dist)
@@ -602,6 +604,11 @@ struct HttpServer::Impl {
         stopping.store(true, std::memory_order_release);
         if (srv_sock != INVALID_SOCKET) closesocket(srv_sock);
         if (thr.joinable()) thr.join();
+        // Accept loop stopped taking new connections above; drain whatever
+        // per-connection worker threads are still mid-request (e.g. a slow
+        // artwork extraction) before Impl's members are destroyed under them.
+        using namespace std::chrono_literals;
+        while (inflight_.load(std::memory_order_acquire) > 0) std::this_thread::sleep_for(5ms);
     }
 
     json build_sources() const {
@@ -694,8 +701,18 @@ struct HttpServer::Impl {
 
             SOCKET client = accept(srv_sock, nullptr, nullptr);
             if (client == INVALID_SOCKET) continue;
-            handle(client);
-            closesocket(client);
+            // Thread-per-connection: a slow handler (e.g. Local Files artwork
+            // extraction on a cache miss, which shells out to ffmpeg) must not
+            // stall every other dashboard request behind it. The objects
+            // handlers touch (mgr, store, sources) are already shared with the
+            // audio control-loop thread, so they're safe under this added
+            // concurrency too.
+            inflight_.fetch_add(1, std::memory_order_relaxed);
+            std::thread([this, client] {
+                handle(client);
+                closesocket(client);
+                inflight_.fetch_sub(1, std::memory_order_release);
+            }).detach();
         }
 
         WSACleanup();

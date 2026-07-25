@@ -256,6 +256,21 @@ std::mt19937& thread_rng() {
     return g;
 }
 
+// RAII guard for a std::counting_semaphore permit -- releases on scope exit
+// (including via exception) rather than relying on a manual acquire/release
+// pair, which would leak the permit forever if the guarded call throws.
+template <class Semaphore>
+class SemaphorePermit {
+public:
+    explicit SemaphorePermit(Semaphore& sem) : sem_{sem} { sem_.acquire(); }
+    ~SemaphorePermit() { sem_.release(); }
+    SemaphorePermit(const SemaphorePermit&)            = delete;
+    SemaphorePermit& operator=(const SemaphorePermit&) = delete;
+
+private:
+    Semaphore& sem_;
+};
+
 } // namespace
 
 struct LocalFileSource::Decoder {
@@ -660,9 +675,10 @@ std::unique_ptr<LocalFileSource::Decoder> LocalFileSource::open_decoder_locked(s
     d->info.title       = std::move(meta.title);
     d->info.artist      = std::move(meta.artist);
     d->info.album       = std::move(meta.album);
-    art_extract_slots_.acquire();
-    d->art = extract_cover(ff, path, worker_);
-    art_extract_slots_.release();
+    {
+        SemaphorePermit permit{art_extract_slots_};
+        d->art = extract_cover(ff, path, worker_);
+    }
 
     ma_decoder_config mc = ma_decoder_config_init(ma_format_s16, 2, kSampleRate);
     if (ma_decoder_init_file(path.string().c_str(), &mc, &d->ma) == MA_SUCCESS) {
@@ -998,21 +1014,31 @@ std::optional<ArtworkImage> LocalFileSource::artwork_for_index(std::size_t index
         }
     }
 
-    art_extract_slots_.acquire();
-    ArtworkImage art = extract_cover(ffmpeg_path_.empty() ? L"ffmpeg" : ffmpeg_path_.wstring(),
-                                     path, worker_);
-    art_extract_slots_.release();
+    ArtworkImage art;
+    {
+        SemaphorePermit permit{art_extract_slots_};
+        art = extract_cover(ffmpeg_path_.empty() ? L"ffmpeg" : ffmpeg_path_.wstring(), path, worker_);
+    }
 
     {
         std::scoped_lock lk{art_cache_mu_};
-        if (!art_cache_.contains(key)) {
-            if (art_cache_order_.size() >= kArtCacheCap) {
-                art_cache_.erase(art_cache_order_.front());
-                art_cache_order_.pop_front();
-            }
+        if (auto it = art_cache_.find(key); it != art_cache_.end()) {
+            art_cache_bytes_ -= it->second.bytes.size();
+        } else {
             art_cache_order_.push_back(key);
         }
+        art_cache_bytes_ += art.bytes.size();
         art_cache_[key] = art;
+
+        while (!art_cache_order_.empty() &&
+               (art_cache_order_.size() > kArtCacheCap || art_cache_bytes_ > kArtCacheByteBudget)) {
+            const auto& oldest = art_cache_order_.front();
+            if (auto it = art_cache_.find(oldest); it != art_cache_.end()) {
+                art_cache_bytes_ -= it->second.bytes.size();
+                art_cache_.erase(it);
+            }
+            art_cache_order_.pop_front();
+        }
     }
 
     if (art.mime.empty()) return std::nullopt;

@@ -189,7 +189,13 @@ private:
     mutable std::mutex art_cache_mu_;
     std::unordered_map<std::string, ArtworkImage> art_cache_;
     std::deque<std::string> art_cache_order_;
+    std::size_t art_cache_bytes_ = 0;
     static constexpr std::size_t kArtCacheCap = 200;
+    // Belt-and-suspenders alongside kArtCacheCap: extract_cover() allows
+    // covers up to 8 MiB each, so an entry-count-only limit could reach
+    // ~1.6 GiB in the worst case. Evicts oldest entries once either limit
+    // is exceeded.
+    static constexpr std::size_t kArtCacheByteBudget = 64u << 20; // 64 MiB
 
     // Caps concurrent ffmpeg cover-extraction spawns, shared between the
     // playback path (open_decoder_locked, current + prefetch track) and
