@@ -19,6 +19,14 @@ function interfaceValue(key) {
     }
 }
 
+// Fires whenever a keybind's hidden input value changes — including from the
+// synthetic capture widgets (keydown / gamepad polling) that don't dispatch
+// native input/change events on their own — so a delegated listener on the
+// form can re-run the conflict check.
+function notifyKeybindChange(hiddenInput) {
+    hiddenInput.dispatchEvent(new Event("keybind-changed", { bubbles: true }));
+}
+
 function buildKeybindField({ id, label, type, cur, dataset, args: [optionsArg] }) {
     const isPad = type === "keybind-pad";
     const optionsData = typeof optionsArg === "function" ? optionsArg() : (optionsArg || []);
@@ -100,6 +108,7 @@ function buildKeybindField({ id, label, type, cur, dataset, args: [optionsArg] }
             customInput.style.display = "none";
             hiddenInput.value = select.value;
         }
+        notifyKeybindChange(hiddenInput);
     });
 
     if (!isPad) {
@@ -108,6 +117,7 @@ function buildKeybindField({ id, label, type, cur, dataset, args: [optionsArg] }
             if (e.keyCode === 27) {
                 customInput.value = "";
                 hiddenInput.value = "0";
+                notifyKeybindChange(hiddenInput);
                 return;
             }
             if (e.keyCode === 16 || e.keyCode === 17 || e.keyCode === 18) return;
@@ -118,10 +128,14 @@ function buildKeybindField({ id, label, type, cur, dataset, args: [optionsArg] }
             if (e.altKey) mask |= 0x0400;
 
             customInput.value = formatKb(mask);
-            if (select.value === "custom") hiddenInput.value = mask;
+            if (select.value === "custom") {
+                hiddenInput.value = mask;
+                notifyKeybindChange(hiddenInput);
+            }
         });
     } else {
         let padInterval;
+        let lastMask = curNum;
         const gpMap = [
             0x1000, 0x2000, 0x4000, 0x8000, 0x0100, 0x0200, null, null,
             0x0020, 0x0010, 0x0040, 0x0080, 0x0001, 0x0002, 0x0004, 0x0008
@@ -142,6 +156,10 @@ function buildKeybindField({ id, label, type, cur, dataset, args: [optionsArg] }
                         const str = formatPad(currentMask);
                         customInput.value = str;
                         if (select.value === "custom") hiddenInput.value = currentMask;
+                        if (currentMask !== lastMask) {
+                            lastMask = currentMask;
+                            notifyKeybindChange(hiddenInput);
+                        }
                     }
                 }
             }, 50);
@@ -150,11 +168,14 @@ function buildKeybindField({ id, label, type, cur, dataset, args: [optionsArg] }
         customInput.addEventListener("blur", () => clearInterval(padInterval));
     }
 
+    const conflictWarning = el("span", { class: "field-hint field-conflict", hidden: true });
+
     return el("div", { class: "field" }, [
         el("label", { for: id }, label),
         select,
         customInput,
-        hiddenInput
+        hiddenInput,
+        conflictWarning,
     ]);
 }
 
@@ -307,6 +328,46 @@ function buildField(section, spec, cfg) {
     }
 
     return field;
+}
+
+// Flags keybind fields that share the same code with another keybind of the
+// same kind (keyboard vs. gamepad — the two never conflict with each other,
+// since they're read from separate input devices in-game). Call on initial
+// render and whenever a "keybind-changed" event bubbles up from the form.
+export function checkKeybindConflicts(form) {
+    const inputs = $$("input[data-is-hex], input[data-is-numeric]", form);
+    const groups = new Map(); // `${kind}:${code}` -> hidden inputs sharing it
+
+    for (const input of inputs) {
+        const code = parseInt(input.value, 10) || 0;
+        if (!code) continue;
+        const kind = input.dataset.isHex ? "pad" : "kb";
+        const groupKey = `${kind}:${code}`;
+        const list = groups.get(groupKey) || [];
+        list.push(input);
+        groups.set(groupKey, list);
+    }
+
+    for (const input of inputs) {
+        const field = input.closest(".field");
+        const warning = field?.querySelector(".field-conflict");
+        if (!warning) continue;
+
+        const code = parseInt(input.value, 10) || 0;
+        const kind = input.dataset.isHex ? "pad" : "kb";
+        const clashers = code ? (groups.get(`${kind}:${code}`) || []).filter(n => n !== input) : [];
+
+        if (clashers.length) {
+            const names = clashers
+                .map(n => n.closest(".field")?.querySelector("label")?.textContent)
+                .filter(Boolean)
+                .join(", ");
+            warning.textContent = t("hotkeys.conflict", { name: names });
+            warning.hidden = false;
+        } else {
+            warning.hidden = true;
+        }
+    }
 }
 
 // Restores a field's node(s) to their value in `baseline` (the patch

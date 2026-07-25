@@ -157,10 +157,31 @@
     border-radius: var(--radius-md);
     border: 1px solid var(--line);
     background: var(--surface-raise);
+    transition: border-color 0.15s ease, opacity 0.15s ease;
 }
 
 .or-card:hover {
     border-color: var(--line-strong);
+}
+
+.or-card.dragging {
+    opacity: 0.4;
+}
+
+.or-card.drag-over {
+    border-color: var(--accent);
+}
+
+.or-drag-handle {
+    flex: none;
+    color: var(--text-muted);
+    cursor: grab;
+    line-height: 1;
+    font-size: 16px;
+}
+
+.or-drag-handle:active {
+    cursor: grabbing;
 }
 
 .or-logo {
@@ -275,4 +296,18 @@
 
 .or-modal-card .modal-head {
     margin: 0;
+}
+
+.or-editor-url-row {
+    align-items: center;
+}
+
+.or-editor-favicon {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    object-fit: cover;
+    background: var(--surface-card);
+    border: 1px solid var(--line);
 }

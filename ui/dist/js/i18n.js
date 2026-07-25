@@ -111,14 +111,6 @@ export function getLang() {
 }
 
 /**
- * Retrieves the list of all supported languages.
- * @returns {Array<{code: string, label: string}>} The list of supported languages.
- */
-export function getSupportedLangs() {
-    return SUPPORTED;
-}
-
-/**
  * Registers a listener function to be triggered when the language changes.
  * @param {Function} fn - The callback function to register.
  * @returns {Function} An unsubscribe function to remove the listener.

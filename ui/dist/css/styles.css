@@ -14,8 +14,8 @@
 @import url('cards/local-files.css');
 @import url('cards/online-radio.css');
 
-/* Theme skins (Verre/Carbone/Vinyle) — kept after the cards so their
-   structural overrides win the cascade without needing extra specificity */
+/* Squared-corner theme override — kept after the cards so it wins the
+   cascade without needing extra specificity */
 @import url('base/skins.css');
 
 /* Responsive overrides — kept last so it wins the cascade */

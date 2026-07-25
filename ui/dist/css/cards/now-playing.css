@@ -61,25 +61,6 @@
     object-fit: cover;
 }
 
-/* .hero.has-art .cover img {
-    display: block;
-}
-
-.cover::after {
-    content: "♪";
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: clamp(40px, 18vw, 150px);
-    color: rgba(247, 244, 239, 0.08);
-}
-
-.hero.has-art .cover::after {
-    display: none;
-} */
-
 body.theme-light .hero.has-art .hero-backdrop {
     opacity: 0.3;
     filter: blur(60px) saturate(0.9);

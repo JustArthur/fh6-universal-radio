@@ -211,6 +211,11 @@
     font-weight: var(--font-weight-light);
 }
 
+.field-conflict {
+    color: var(--alert);
+    font-weight: var(--font-weight-medium);
+}
+
 .section-disabled>.field:not(.checkbox) {
     opacity: 0.5;
     pointer-events: none;

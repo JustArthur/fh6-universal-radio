@@ -62,7 +62,7 @@ export function createJellyfin(main, ctx) {
         ctx,
         queue: {
             getTitle: track => track.title,
-            getSubtitle: track => track.artist || null,
+            getSubtitle: track => [track.artist, station.cur()?.name].filter(Boolean).join(" · ") || null,
             getCoverUrl: track => track.cover_url,
             getSearchFields: track => [track.title || "", track.artist || ""],
         },

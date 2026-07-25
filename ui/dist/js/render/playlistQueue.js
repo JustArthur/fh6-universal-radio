@@ -44,8 +44,10 @@ export function renderTrackQueue(trackList, queue, search, opts) {
 
             const isCurrent = track.index === queue.cursor;
             const coverWrap = el("div", { class: "track-cover" }, [coverImg]);
-            if (!coverUrl) {
+            const showPlaceholder = () => {
+                if (coverWrap.dataset.noart) return;
                 coverWrap.dataset.noart = "1";
+                coverImg.remove();
                 coverWrap.append(
                     el("div", { class: "eq" }, [
                         el("span", { class: "eq-bar" }),
@@ -53,6 +55,14 @@ export function renderTrackQueue(trackList, queue, search, opts) {
                         el("span", { class: "eq-bar" }),
                     ])
                 );
+            };
+            if (!coverUrl) {
+                showPlaceholder();
+            } else {
+                // Some sources (e.g. Local Files) only know whether a track has
+                // embedded art once it's actually decoded, so a 404 here is
+                // expected -- degrade to the same placeholder as no cover_url.
+                coverImg.addEventListener("error", showPlaceholder, { once: true });
             }
 
             const title = translateLoadingPlaceholder(opts.getTitle(track), t) || t("label.unknown_title");

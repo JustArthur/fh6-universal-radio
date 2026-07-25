@@ -9,7 +9,7 @@ import { renderSources } from "./render/sources.js";
 import { createOutput } from "./render/output.js";
 import {
     renderSettings, collectSettings, applyInterfacePrefs,
-    markModifiedFields, resetFieldToBaseline,
+    markModifiedFields, resetFieldToBaseline, checkKeybindConflicts,
 } from "./render/settings.js";
 import { createDeps } from "./render/deps.js";
 import { createExternalAudio } from "./render/externalAudio.js";
@@ -116,6 +116,7 @@ let formBaseline = null;
 function snapshotForm() {
     formBaseline = collectSettings(refs.form);
     markModifiedFields(refs.form, formBaseline);
+    checkKeybindConflicts(refs.form);
 }
 
 function isFormDirty() {
@@ -270,6 +271,7 @@ document.addEventListener("keydown", e => {
 
 refs.form.addEventListener("input", () => markModifiedFields(refs.form, formBaseline));
 refs.form.addEventListener("change", () => markModifiedFields(refs.form, formBaseline));
+refs.form.addEventListener("keybind-changed", () => checkKeybindConflicts(refs.form));
 
 refs.form.addEventListener("click", e => {
     const btn = e.target.closest(".field-reset-btn");

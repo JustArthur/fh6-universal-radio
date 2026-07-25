@@ -82,6 +82,7 @@ export function createOnlineRadio(main, ctx) {
   let cfgSig = null;
   let filter = "";
   let historySig = "";
+  let dragIdx = null; // real (unsorted) index of the station currently being dragged
 
   // --- cast bar -------------------------------------------------------------
   const urlInput = el("input", {
@@ -204,8 +205,8 @@ export function createOnlineRadio(main, ctx) {
     });
     const editBtn = el("button", { type: "button", class: "or-icon", title: t("online_radio.edit") }, "✎");
     editBtn.addEventListener("click", () =>
-      editor.open(s, ({ name, url }) => {
-        Object.assign(s, { name, url });
+      editor.open(s, ({ name, url, favicon }) => {
+        Object.assign(s, { name, url, favicon: favicon || s.favicon });
         renderMine();
         persist();
       }));
@@ -230,7 +231,10 @@ export function createOnlineRadio(main, ctx) {
     const playBtn0 = el("button", { type: "button", class: "btn filled or-play" }, t("btn.play"));
     playBtn0.addEventListener("click", () => play(s));
 
-    return el("div", { class: "or-card" }, [
+    const handle = el("span", { class: "or-drag-handle", title: t("online_radio.drag_to_reorder"), "aria-hidden": "true" }, "⠿");
+
+    const card = el("div", { class: "or-card", draggable: "true" }, [
+      handle,
       stationLogo(s.favicon),
       el("div", { class: "or-card-main" }, [
         el("span", { class: "or-name" }, highlightText(s.name || s.url, terms)),
@@ -238,6 +242,35 @@ export function createOnlineRadio(main, ctx) {
       ]),
       el("div", { class: "or-card-actions" }, [playBtn0, favBtn, editBtn, upBtn, downBtn, delBtn]),
     ]);
+
+    card.addEventListener("dragstart", e => {
+      dragIdx = idx;
+      card.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+    });
+    card.addEventListener("dragend", () => {
+      dragIdx = null;
+      card.classList.remove("dragging");
+    });
+    card.addEventListener("dragover", e => {
+      if (dragIdx === null || dragIdx === idx) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      card.classList.add("drag-over");
+    });
+    card.addEventListener("dragleave", () => card.classList.remove("drag-over"));
+    card.addEventListener("drop", e => {
+      e.preventDefault();
+      card.classList.remove("drag-over");
+      if (dragIdx === null || dragIdx === idx) return;
+      const [moved] = stations.splice(dragIdx, 1);
+      stations.splice(idx, 0, moved);
+      dragIdx = null;
+      renderMine();
+      persist();
+    });
+
+    return card;
   }
 
   function move(idx, dir) {
@@ -258,10 +291,11 @@ export function createOnlineRadio(main, ctx) {
     summaryEl.hidden = !stations.length;
     summaryEl.textContent = `${stations.length} ${t("label.stations")}`;
 
+    // No automatic favorite-to-top sort: favorites are a marker (star), not a
+    // position — this keeps manual/drag ordering stable and predictable.
     const order = stations
       .map((s, i) => ({ s, i }))
-      .filter(({ s }) => matches(s))
-      .sort((a, b) => (b.s.favorite ? 1 : 0) - (a.s.favorite ? 1 : 0));
+      .filter(({ s }) => matches(s));
 
     if (!stations.length) return void mineList.replaceChildren(emptyState());
     if (!order.length) {
@@ -297,8 +331,18 @@ export function createOnlineRadio(main, ctx) {
   function resultCard(s, terms = []) {
     const playBtn0 = el("button", { type: "button", class: "btn filled or-play" }, t("btn.play"));
     playBtn0.addEventListener("click", () => play(s));
-    const addBtn = el("button", { type: "button", class: "btn ghost" }, t("online_radio.add"));
-    addBtn.addEventListener("click", () => addStation(s));
+    const isSaved = stations.some(x => x.url === s.url);
+    const addBtn = el(
+      "button",
+      { type: "button", class: "btn ghost" + (isSaved ? " saved" : ""), disabled: isSaved },
+      isSaved ? t("online_radio.saved") : t("online_radio.add"),
+    );
+    addBtn.addEventListener("click", () => {
+      addStation(s);
+      addBtn.disabled = true;
+      addBtn.classList.add("saved");
+      addBtn.textContent = t("online_radio.saved");
+    });
     return el("div", { class: "or-card" }, [
       stationLogo(s.favicon),
       el("div", { class: "or-card-main" }, [
@@ -422,9 +466,21 @@ function stationLogo(url, small = false) {
   return img;
 }
 
+// Guesses a favicon URL from a stream URL's origin — most radio stream hosts
+// serve a real /favicon.ico even when the stream itself has no artwork API.
+function guessFaviconUrl(streamUrl) {
+  try {
+    const origin = new URL(streamUrl).origin;
+    return `${origin}/favicon.ico`;
+  } catch {
+    return "";
+  }
+}
+
 // Modal for adding / editing a station (name + URL). Replaces window.prompt().
 function createEditor() {
   let onSave = null;
+  let favicon = "";
   const nameInput = el("input", {
     type: "text", placeholder: t("online_radio.station_name"),
     dataset: { i18nPlaceholder: "online_radio.station_name" }, autocomplete: "off",
@@ -433,6 +489,7 @@ function createEditor() {
     type: "text", placeholder: t("online_radio.stream_url"),
     dataset: { i18nPlaceholder: "online_radio.stream_url" }, autocomplete: "off",
   });
+  const faviconPreview = el("img", { class: "or-editor-favicon", alt: "", hidden: true });
   const saveBtn = el("button", { type: "button", class: "btn filled", dataset: { i18n: "btn.save" } }, t("btn.save"));
   const cancelBtn = el("button", { type: "button", class: "btn ghost danger", dataset: { i18n: "btn.cancel" } }, t("btn.cancel") ?? "Cancel");
   const title = el("h3", {}, t("online_radio.save_station"));
@@ -443,11 +500,30 @@ function createEditor() {
       el("label", { class: "field-label", dataset: { i18n: "online_radio.station_name" } }, t("online_radio.station_name")),
       nameInput,
       el("label", { class: "field-label", dataset: { i18n: "online_radio.stream_url" } }, t("online_radio.stream_url")),
-      urlInput,
+      el("div", { class: "or-editor-url-row row" }, [urlInput, faviconPreview]),
       el("div", { class: "modal-foot end row" }, [cancelBtn, saveBtn]),
     ]),
   ]);
   document.body.append(modal);
+
+  const detectFavicon = debounce(() => {
+    const guess = guessFaviconUrl(urlInput.value.trim());
+    if (!guess) {
+      favicon = "";
+      faviconPreview.hidden = true;
+      return;
+    }
+    faviconPreview.hidden = true;
+    faviconPreview.onload = () => {
+      favicon = guess;
+      faviconPreview.hidden = false;
+    };
+    faviconPreview.onerror = () => {
+      favicon = "";
+      faviconPreview.hidden = true;
+    };
+    faviconPreview.src = guess;
+  }, 400);
 
   const close = () => {
     modal.hidden = true;
@@ -458,12 +534,13 @@ function createEditor() {
     const url = urlInput.value.trim();
     if (!url) return toast(t("error.url_required"), true);
     close();
-    onSave?.({ name: name || url, url });
+    onSave?.({ name: name || url, url, favicon });
     document.body.style.overflow = "";
   };
 
   cancelBtn.addEventListener("click", close);
   saveBtn.addEventListener("click", submit);
+  urlInput.addEventListener("input", detectFavicon);
   modal.addEventListener("click", e => e.target === modal && close());
   [nameInput, urlInput].forEach(i => i.addEventListener("keydown", e => e.key === "Enter" && submit()));
 
@@ -473,6 +550,15 @@ function createEditor() {
       title.textContent = station.url && station.name ? t("online_radio.edit_station") : t("online_radio.save_station");
       nameInput.value = station.name || "";
       urlInput.value = station.url || "";
+      favicon = station.favicon || "";
+      faviconPreview.hidden = true;
+      if (favicon) {
+        faviconPreview.onload = () => { faviconPreview.hidden = false; };
+        faviconPreview.onerror = () => { favicon = ""; };
+        faviconPreview.src = favicon;
+      } else if (station.url) {
+        detectFavicon();
+      }
       modal.hidden = false;
       (station.name ? urlInput : nameInput).focus();
       document.body.style.overflow = "hidden";

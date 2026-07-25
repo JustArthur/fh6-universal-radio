@@ -4,6 +4,7 @@ import { icons } from "../icons.js";
 import { t } from "../i18n.js";
 import { prefs } from "../preferences.js";
 import { ensureContrast, getPageBackgroundRgb } from "../lib/color.js";
+import { setMarqueeText } from "../lib/marquee.js";
 
 export function activeSource(state) {
     return state?.sources?.available?.find(s => s.name === state?.sources?.active) || null;
@@ -65,7 +66,7 @@ export function renderNowPlaying(refs, state) {
     const album = translateLoadingPlaceholder(track.album, t);
 
     setText(refs.title, title || t("now_playing.nothing_playing"));
-    setText(refs.artist, artist ? (album ? `${artist} · ${album}` : artist) : "");
+    setMarqueeText(refs.artist, artist ? (album ? `${artist} · ${album}` : artist) : "");
     setText(refs.pos, fmt(track.position_ms));
     setText(refs.dur, fmt(track.duration_ms));
     refs.fill.style.width = progressRatio(track.position_ms, track.duration_ms) * 100 + "%";
@@ -78,8 +79,8 @@ export function renderNowPlaying(refs, state) {
     }
 
     if (refs.mini) {
-        setText(refs.mini.title, title || t("now_playing.nothing_playing"));
-        setText(refs.mini.artist, artist ? (album ? `${artist} · ${album}` : artist) : "");
+        setMarqueeText(refs.mini.title, title || t("now_playing.nothing_playing"));
+        setMarqueeText(refs.mini.artist, artist ? (album ? `${artist} · ${album}` : artist) : "");
 
         if (hasArt) {
             if (refs.mini.art.getAttribute("src") !== src) {

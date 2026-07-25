@@ -24,6 +24,24 @@ const REPEATS = [
 ];
 const optionList = pairs => pairs.map(([value, key]) => el("option", { value, dataset: { i18n: key } }, t(key)));
 
+const RECENT_PATHS_KEY = "lf.recent_paths.v1";
+const RECENT_PATHS_CAP = 6;
+
+const readJson = (key, fallback) => {
+    try {
+        return JSON.parse(localStorage.getItem(key)) ?? fallback;
+    } catch {
+        return fallback;
+    }
+};
+const writeJson = (key, value) => {
+    try {
+        localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+        // private mode / quota — recent paths are best-effort
+    }
+};
+
 /**
  * Normalizes a path string to be case-insensitive and separator-agnostic.
  *
@@ -65,19 +83,42 @@ function createBrowser() {
     let onPick = null;
 
     const list = el("div", { class: "browse-list" });
-    const crumb = el("div", { class: "browse-crumb muted" });
     const useBtn = el("button", { type: "button", class: "btn filled", dataset: { i18n: "local_files.browser.use" } }, t("local_files.browser.use"));
     const upBtn = el("button", { type: "button", class: "btn ghost", dataset: { i18n: "local_files.browser.up" } }, t("local_files.browser.up"));
     const closeBtn = el("button", { type: "button", class: "btn ghost danger", dataset: { i18n: "btn.cancel" } }, t("btn.cancel"));
+    const recentList = el("datalist", { id: "browse-recent-paths" });
+    const pathInput = el("input", {
+        type: "text",
+        class: "browse-path-input",
+        autocomplete: "off",
+        spellcheck: "false",
+        placeholder: t("local_files.browser.path_placeholder"),
+        dataset: { i18nPlaceholder: "local_files.browser.path_placeholder" },
+    });
+    pathInput.setAttribute("list", "browse-recent-paths");
+    const goBtn = el("button", { type: "button", class: "btn ghost", dataset: { i18n: "local_files.browser.go" } }, t("local_files.browser.go"));
 
     const modal = el("div", { class: "modal-overlay", hidden: true }, [
         el("div", { class: "modal-card" }, [
-            el("div", { class: "modal-head" }, [el("h3", { dataset: { i18n: "local_files.browser.title" } }, t("local_files.browser.title")), crumb]),
+            el("div", { class: "modal-head" }, [el("h3", { dataset: { i18n: "local_files.browser.title" } }, t("local_files.browser.title"))]),
+            el("div", { class: "browse-path-row row" }, [pathInput, goBtn]),
+            recentList,
             list,
             el("div", { class: "modal-foot row" }, [closeBtn, upBtn, useBtn]),
         ]),
     ]);
     document.body.append(modal);
+
+    function renderRecentPaths() {
+        recentList.replaceChildren(...readJson(RECENT_PATHS_KEY, []).map(p => el("option", { value: p })));
+    }
+    function pushRecentPath(p) {
+        if (!p) return;
+        const recents = [p, ...readJson(RECENT_PATHS_KEY, []).filter(r => r !== p)].slice(0, RECENT_PATHS_CAP);
+        writeJson(RECENT_PATHS_KEY, recents);
+        renderRecentPaths();
+    }
+    renderRecentPaths();
 
     async function go(path) {
         dir = path || "";
@@ -89,7 +130,7 @@ function createBrowser() {
             return;
         }
         dir = r.path || "";
-        crumb.textContent = dir || t("local_files.browser.crumb_root");
+        pathInput.value = dir;
         upBtn.disabled = false;
         useBtn.disabled = !dir;
         list.replaceChildren(
@@ -109,6 +150,14 @@ function createBrowser() {
         }
     }
 
+    goBtn.addEventListener("click", () => go(pathInput.value.trim()));
+    pathInput.addEventListener("keydown", e => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            go(pathInput.value.trim());
+        }
+    });
+
     upBtn.addEventListener("click", () => go(list.dataset.parent || ""));
     closeBtn.addEventListener("click", () => {
         modal.hidden = true;
@@ -121,6 +170,7 @@ function createBrowser() {
     useBtn.addEventListener("click", () => {
         if (!dir) return;
         modal.hidden = true;
+        pushRecentPath(dir);
         onPick?.(dir);
     });
 
@@ -181,7 +231,7 @@ export function createLocalFiles(main, ctx) {
         ctx,
         queue: {
             getTitle: track => track.title || t("label.unknown_title"),
-            getSubtitle: track => track.folder || null,
+            getSubtitle: track => [track.artist, track.folder].filter(Boolean).join(" · ") || null,
             getCoverUrl: track => track.cover_url,
             getSearchFields: track => [track.title || "", track.artist || "", track.folder || ""],
         },

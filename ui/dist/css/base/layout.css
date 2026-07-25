@@ -67,10 +67,6 @@ main {
     animation: rise 0.25s ease;
 }
 
-.card.elevated {
-    box-shadow: var(--shadow-xl);
-}
-
 .card h2 {
     margin: 0 0 var(--spacing-16);
     font-size: 11px;
